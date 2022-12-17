@@ -22,6 +22,8 @@ from torchvision import datasets, transforms
 # ---------------------------------------------------------------------------- #
 from models import PreResnet
 from data import get_dataset
+from lossfns import ClassifierTeacherLoss
+from training import eval_epoch, supervised_epoch, distillation_epoch
 # ---------------------------------------------------------------------------- #
 #                                   CLI args                                   #
 # ---------------------------------------------------------------------------- #
@@ -44,6 +46,8 @@ FLAGS['weight_decay'] = 1e-4
 FLAGS['nestrov'] = True
 FLAGS['teacher_epochs'] = 200
 FLAGS['ensemble_size'] = 3
+FLAGS['cosine_annealing_etamin'] = 1e-6
+FLAGS['evaluation_frequency'] = 10 # every 10 epochs
 
 SERIAL_EXEC = xmp.MpSerialExecutor()
 WRAPPED_MODEL = xmp.MpModelWrapper(PreResnet(depth=56))
@@ -67,11 +71,34 @@ test_loader = torch.utils.data.DataLoader(
       num_workers=FLAGS['num_workers'],
       drop_last=True)
 
-print('train_loader length: ', len(train_loader))
-print('test_loader length: ', len(test_loader))
-#learning_rate = FLAGS['learning_rate'] * xm.xrt_world_size()
-#device = xm.xla_device()
-#model = WRAPPED_MODEL.to(device)
-#optimizer = optim.SGD(model.parameters(), lr=learning_rate,
-#                      momentum=FLAGS['momentum'], weight_decay=5e-4)
+learning_rate = FLAGS['learning_rate'] * xm.xrt_world_size()
+device = xm.xla_device()
+model = WRAPPED_MODEL.to(device)
+optimizer = optim.SGD(model.parameters(), lr=learning_rate,
+                      momentum=FLAGS['momentum'], weight_decay=5e-4)
+teacher_loss_fn = ClassifierTeacherLoss(model)
+
+
+optimizer = torch.optim.SGD(params= model.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
+lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
+#TODO save initial model state dict
+records = []
+eval_metrics = eval_epoch(model, test_loader, epoch=0, loss_fn=teacher_loss_fn)
+records.append(eval_metrics)
+for epoch in range(FLAGS['teacher_epochs']):
+    metrics = {}
+    train_metrics = supervised_epoch(model, train_loader, optimizer, lr_scheduler, epoch=epoch+1, loss_fn = teacher_loss_fn)
+    metrics.update(train_metrics)
+    if(epoch % FLAGS['evaluation_frequency'] == 0):
+        eval_metrics = eval_epoch(model, test_loader, epoch=epoch+1, loss_fn=teacher_loss_fn)
+        metrics.update(eval_metrics)
+    records.append(metrics)
+
+print('Finished training teachers')
+# TODO save model (as pth) and metrics (as csv)
+# TODO test loading teacher from pth and evaluating
+# TODO test reading metrics data from csv and plotting
+# TODO implement distillation
+
+
 
