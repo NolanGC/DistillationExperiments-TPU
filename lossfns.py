@@ -10,7 +10,7 @@ class ClassifierStudentLoss(object):
 
     def __call__(self, inputs, targets, teacher_logits, temp=None):
         real_batch_size = targets.size(0)
-        student_logits = self.student(inputs.to(self.student.device))
+        student_logits = self.student(inputs.to(self.student.parameters().device))
         hard_loss = F.cross_entropy(student_logits[:real_batch_size], targets)
         # temp = torch.ones_like(student_logits) if temp is None else temp.unsqueeze(-1)
         temp = torch.ones_like(student_logits) if temp is None else temp
@@ -23,7 +23,7 @@ class ClassifierTeacherLoss(object):
         self.teacher = teacher_model
 
     def __call__(self, inputs, targets):
-        logits = self.teacher(inputs.to(self.teacher.device))
+        logits = self.teacher(inputs.to(self.teacher.parameters().device))
         loss = F.cross_entropy(logits, targets)
         return loss, logits
     
@@ -43,6 +43,6 @@ class ClassifierEnsembleLoss(object):
         self.ensemble = ensemble
 
     def __call__(self, inputs, targets):
-        logits = self.ensemble(inputs.to(self.ensemble.device))
+        logits = self.ensemble(inputs.to(self.ensemble.parameters().device))
         logits = reduce_ensemble_logits(logits)
         return F.nll_loss(logits, targets), logits
