@@ -19,11 +19,12 @@ class ClassifierStudentLoss(object):
         return loss, student_logits
 
 class ClassifierTeacherLoss(object):
-    def __init__(self, teacher_model):
+    def __init__(self, teacher_model, dev):
         self.teacher = teacher_model
+        self.device = dev
 
     def __call__(self, inputs, targets):
-        logits = self.teacher(inputs.to(self.teacher.parameters().device))
+        logits = self.teacher(inputs.to(self.device))
         loss = F.cross_entropy(logits, targets)
         return loss, logits
     

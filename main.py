@@ -76,7 +76,7 @@ device = xm.xla_device()
 model = WRAPPED_MODEL.to(device)
 optimizer = optim.SGD(model.parameters(), lr=learning_rate,
                       momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov'])
-teacher_loss_fn = ClassifierTeacherLoss(model)
+teacher_loss_fn = ClassifierTeacherLoss(model, device)
 
 
 optimizer = torch.optim.SGD(params= model.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
