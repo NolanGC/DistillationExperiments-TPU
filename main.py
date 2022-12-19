@@ -53,8 +53,6 @@ SERIAL_EXEC = xmp.MpSerialExecutor()
 WRAPPED_MODEL = xmp.MpModelWrapper(PreResnet(depth=56))
 
 train_dataset, test_dataset = SERIAL_EXEC.run(get_dataset)
-train_dataset = train_dataset.to(xm.xla_device())
-test_dataset = test_dataset.to(xm.xla_device())
 train_sampler = torch.utils.data.distributed.DistributedSampler(
       train_dataset,
       num_replicas=xm.xrt_world_size(),
