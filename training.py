@@ -6,7 +6,7 @@ from torch.distributions import Categorical
 import torch.nn.functional as F
 import torch_xla.core.xla_model as xm
 
-from miscutils import batch_calibration_stats, expected_calibration_err, reduce_ensemble_logits, preact_cka
+from utils import batch_calibration_stats, expected_calibration_err, reduce_ensemble_logits, preact_cka
 
 def get_lr(lr_scheduler):
     return lr_scheduler.get_last_lr()[0]

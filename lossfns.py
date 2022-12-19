@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from miscutils import reduce_ensemble_logits
+from utils import reduce_ensemble_logits
 
 class ClassifierStudentLoss(object):
     def __init__(self, student_model, base_loss, alpha=0.9):

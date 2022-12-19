@@ -75,7 +75,7 @@ learning_rate = FLAGS['learning_rate'] * xm.xrt_world_size()
 device = xm.xla_device()
 model = WRAPPED_MODEL.to(device)
 optimizer = optim.SGD(model.parameters(), lr=learning_rate,
-                      momentum=FLAGS['momentum'], weight_decay=5e-4)
+                      momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov'])
 teacher_loss_fn = ClassifierTeacherLoss(model)
 
 
