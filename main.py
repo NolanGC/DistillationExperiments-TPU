@@ -27,13 +27,13 @@ from training import eval_epoch, supervised_epoch, distillation_epoch
 # ---------------------------------------------------------------------------- #
 #                                   CLI args                                   #
 # ---------------------------------------------------------------------------- #
-parser = argparse.ArgumentParser()
-parser.add_argument('--permuted', action='store_true', help='permuted argument')
-parser.add_argument('--loadTeachers', action='store_true', help='load teachers from state dict argument')
-parser.add_argument("-d", "--directory", required=True, help="directory path")
-args = parser.parse_args()
+#parser = argparse.ArgumentParser()
+#parser.add_argument('--permuted', action='store_true', help='permuted argument')
+#parser.add_argument('--loadTeachers', action='store_true', help='load teachers from state dict argument')
+#parser.add_argument("-d", "--directory", required=True, help="directory path")
+#args = parser.parse_args()
 dataset_dir = 'data/datasets'
-output_dir = args.directory
+#output_dir = args.directory
 # ---------------------------------------------------------------------------- #
 #                               experiment flags                               #
 # ---------------------------------------------------------------------------- #
@@ -52,7 +52,7 @@ FLAGS['evaluation_frequency'] = 10 # every 10 epochs
 SERIAL_EXEC = xmp.MpSerialExecutor()
 WRAPPED_MODEL = xmp.MpModelWrapper(PreResnet(depth=56))
 
-train_dataset, test_dataset = SERIAL_EXEC.run(get_dataset)
+train_dataset, test_dataset = SERIAL_EXEC.run(get_dataset, dataset_dir)
 train_sampler = torch.utils.data.distributed.DistributedSampler(
       train_dataset,
       num_replicas=xm.xrt_world_size(),
