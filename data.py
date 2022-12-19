@@ -1,7 +1,8 @@
 from torchvision.transforms import ToTensor, Normalize, RandomHorizontalFlip, RandomCrop
 import torchvision
 
-def get_dataset(dataset_dir):
+def get_dataset():
+    dataset_dir = 'data/datasets'
     min_vals = (0.0,0.0,0.0)
     max_vals = (1.0,1.0,1.0)
     offset = [0.5 * (min_val + max_val) for min_val, max_val in zip(min_vals, max_vals)]

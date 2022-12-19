@@ -52,7 +52,7 @@ FLAGS['evaluation_frequency'] = 10 # every 10 epochs
 SERIAL_EXEC = xmp.MpSerialExecutor()
 WRAPPED_MODEL = xmp.MpModelWrapper(PreResnet(depth=56))
 
-train_dataset, test_dataset = SERIAL_EXEC.run(get_dataset, dataset_dir)
+train_dataset, test_dataset = SERIAL_EXEC.run(get_dataset)
 train_sampler = torch.utils.data.distributed.DistributedSampler(
       train_dataset,
       num_replicas=xm.xrt_world_size(),
