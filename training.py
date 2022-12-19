@@ -79,7 +79,7 @@ def eval_epoch(net, loader, epoch, loss_fn, teacher=None, with_cka=True):
             inputs, targets = batch[:2]
             loss_args = [inputs, targets]
             if teacher is not None:
-                teacher_logits = teacher(inputs)
+                teacher_logits = teacher(inputs.to(teacher.device))
                 teacher_logits = reduce_ensemble_logits(teacher_logits)
                 loss_args.append(teacher_logits)
             loss, logits = loss_fn(*loss_args)
@@ -132,7 +132,6 @@ def distillation_epoch(student, train_loader, optimizer, lr_scheduler, epoch,
     num_batches = len(train_loader)
 
     for batch_idx, (inputs, targets, teacher_logits, temp) in enumerate(train_loader):
-        inputs, targets, teacher_logits = try_cuda(inputs, targets, teacher_logits)
         optimizer.zero_grad()
         loss, student_logits = loss_fn(inputs, targets, teacher_logits, temp)
         loss.backward()
