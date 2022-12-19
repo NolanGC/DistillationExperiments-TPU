@@ -27,11 +27,12 @@ class ClassifierTeacherLoss(object):
         logits = self.teacher(inputs.to(self.device))
         loss = F.cross_entropy(logits, targets)
         return loss, logits
-    
+
+"""
 class TeacherStudentFwdCrossEntLoss(object):
-    """Soft teacher/student cross entropy loss from [Hinton et al (2015)]
+    #Soft teacher/student cross entropy loss from [Hinton et al (2015)]
         (https://arxiv.org/abs/1503.02531)
-    """
+
     def __call__(self, teacher_logits, student_logits, temp):
         if teacher_logits.dim() == 3:
             teacher_logits = reduce_ensemble_logits(teacher_logits)
@@ -47,3 +48,4 @@ class ClassifierEnsembleLoss(object):
         logits = self.ensemble(inputs.to(self.ensemble.parameters().device))
         logits = reduce_ensemble_logits(logits)
         return F.nll_loss(logits, targets), logits
+"""
