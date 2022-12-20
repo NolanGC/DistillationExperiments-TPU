@@ -44,7 +44,7 @@ FLAGS['learning_rate'] = 5e-2
 FLAGS['momentum'] = 0.9
 FLAGS['weight_decay'] = 1e-4
 FLAGS['nestrov'] = True
-FLAGS['teacher_epochs'] = 200
+FLAGS['teacher_epochs'] = 1
 FLAGS['ensemble_size'] = 3
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
@@ -83,9 +83,12 @@ optimizer = torch.optim.SGD(params= model.parameters(), lr=FLAGS['learning_rate'
 lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
 #TODO save initial model state dict
 records = []
-eval_metrics = eval_epoch(model, test_loader, epoch=0, loss_fn=teacher_loss_fn)
+print('initial eval begin')
+eval_metrics = eval_epoch(model, test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
 records.append(eval_metrics)
+print('training begin')
 for epoch in range(FLAGS['teacher_epochs']):
+    print("epoch: ", epoch)
     metrics = {}
     train_metrics = supervised_epoch(model, train_loader, optimizer, lr_scheduler, epoch=epoch+1, loss_fn = teacher_loss_fn)
     metrics.update(train_metrics)

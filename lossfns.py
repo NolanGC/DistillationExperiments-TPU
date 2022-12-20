@@ -25,7 +25,7 @@ class ClassifierTeacherLoss(object):
 
     def __call__(self, inputs, targets):
         logits = self.teacher(inputs.to(self.device))
-        loss = F.cross_entropy(logits, targets)
+        loss = F.cross_entropy(logits.to(self.device), targets.to(self.device))
         return loss, logits
 
 """

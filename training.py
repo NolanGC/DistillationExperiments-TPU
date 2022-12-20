@@ -35,9 +35,9 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler, epoch, loss_fn):
         loss, outputs = loss_fn(inputs, targets)
         loss.backward()
         xm.optimizer_step(optimizer)
-
+        outputs = outputs.to(device)
         train_loss += loss.item()
-        _, predicted = outputs.max(1)
+        _, predicted = outputs.max(1).to(device)
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
 
@@ -51,7 +51,7 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler, epoch, loss_fn):
     return metrics
 
 
-def eval_epoch(net, loader, epoch, loss_fn, teacher=None, with_cka=True):
+def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=True):
     """
     Evaluate the model on the test set.
     Inputs: 
@@ -73,13 +73,15 @@ def eval_epoch(net, loader, epoch, loss_fn, teacher=None, with_cka=True):
     kl = 0
     ece_stats = None
 
-    for batch_idx, batch in enumerate(loader):
+    for bath_idx, batch in enumerate(loader):
         with torch.no_grad():
             # [:2] to ignore teacher logits in the case of distillation
             inputs, targets = batch[:2]
+            inputs = inputs.to(device)
+            targets = targets.to(device)
             loss_args = [inputs, targets]
             if teacher is not None:
-                teacher_logits = teacher(inputs.to(teacher.device))
+                teacher_logits = teacher(inputs)
                 teacher_logits = reduce_ensemble_logits(teacher_logits)
                 loss_args.append(teacher_logits)
             loss, logits = loss_fn(*loss_args)
@@ -100,7 +102,7 @@ def eval_epoch(net, loader, epoch, loss_fn, teacher=None, with_cka=True):
             ece_stats = batch_ece_stats if ece_stats is None else [
                 t1 + t2 for t1, t2 in zip(ece_stats, batch_ece_stats)
             ]
-
+            xm.mark_step()
     ece = expected_calibration_err(*ece_stats, num_samples=total)
     metrics = dict(
         test_loss=test_loss / len(loader),
@@ -112,6 +114,7 @@ def eval_epoch(net, loader, epoch, loss_fn, teacher=None, with_cka=True):
 
     # only return generalization metrics if there is no teacher
     if teacher is None:
+        print(metrics)
         return metrics
 
     # add fidelity metrics
@@ -119,7 +122,7 @@ def eval_epoch(net, loader, epoch, loss_fn, teacher=None, with_cka=True):
     if len(teacher.components) == 1 and hasattr(teacher.components[0], 'preacts') and with_cka:
         cka = preact_cka(teacher.components[0], net, loader)
         metrics.update({f'test_cka_{i}': val for i, val in enumerate(cka)})
-
+    print(metrics)
     return metrics
 
 
