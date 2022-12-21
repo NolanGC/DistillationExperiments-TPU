@@ -5,13 +5,14 @@ from torch.distributions.kl import kl_divergence
 from torch.distributions import Categorical
 import torch.nn.functional as F
 import torch_xla.core.xla_model as xm
+import torch_xla.distributed.parallel_loader as pl
 
 from utils import batch_calibration_stats, expected_calibration_err, reduce_ensemble_logits, preact_cka
 
 def get_lr(lr_scheduler):
     return lr_scheduler.get_last_lr()[0]
 
-def supervised_epoch(net, loader, optimizer, lr_scheduler, epoch, loss_fn):
+def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn):
     """
     Train the network for one epoch.
     Inputs:
@@ -28,16 +29,16 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler, epoch, loss_fn):
     train_loss = 0
     correct = 0
     total = 0
-
-    for batch_idx, (inputs, targets) in enumerate(loader):
+    para_train_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device)
+    for batch_idx, (inputs, targets) in enumerate(para_train_loader):
         optimizer.zero_grad()
-
+        
         loss, outputs = loss_fn(inputs, targets)
         loss.backward()
         xm.optimizer_step(optimizer)
         outputs = outputs.to(device)
         train_loss += loss.item()
-        _, predicted = outputs.max(1).to(device)
+        _, predicted = outputs.max(1)
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
 
@@ -72,13 +73,11 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     nll = 0
     kl = 0
     ece_stats = None
-
-    for bath_idx, batch in enumerate(loader):
+    para_train_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device) 
+    for bath_idx, batch in enumerate(para_train_loader):
         with torch.no_grad():
             # [:2] to ignore teacher logits in the case of distillation
             inputs, targets = batch[:2]
-            inputs = inputs.to(device)
-            targets = targets.to(device)
             loss_args = [inputs, targets]
             if teacher is not None:
                 teacher_logits = teacher(inputs)
