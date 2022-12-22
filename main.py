@@ -38,7 +38,7 @@ dataset_dir = 'data/datasets'
 #                               experiment flags                               #
 # ---------------------------------------------------------------------------- #
 FLAGS = {}
-FLAGS['batch_size'] = 128
+FLAGS['batch_size'] = 512
 FLAGS['num_workers'] = 4 #TODO from XLA example, verify this number is optimal
 FLAGS['learning_rate'] = 5e-2
 FLAGS['momentum'] = 0.9
@@ -84,19 +84,23 @@ def main(rank):
     #TODO save initial model state dict
     records = []
     print('initial eval begin')
-    eval_metrics = eval_epoch(model, test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
-    records.append(eval_metrics)
+    # eval_metrics = eval_epoch(model, test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
+    #records.append(eval_metrics)
     print('training begin')
+    import time
+    start = time.time()
     for epoch in range(FLAGS['teacher_epochs']):
         print("epoch: ", epoch)
         metrics = {}
         train_metrics = supervised_epoch(model, train_loader, optimizer, lr_scheduler,device=device, epoch=epoch+1, loss_fn = teacher_loss_fn)
         metrics.update(train_metrics)
         if(epoch % FLAGS['evaluation_frequency'] == 0):
-            eval_metrics = eval_epoch(model, test_loader, device=device, epoch=epoch+1, loss_fn=teacher_loss_fn)
-            metrics.update(eval_metrics)
+            #eval_metrics = eval_epoch(model, test_loader, device=device, epoch=epoch+1, loss_fn=teacher_loss_fn)
+            pass
+            #metrics.update(eval_metrics)
         records.append(metrics)
-
+    end = time.time()
+    print(end-start)
     print('Finished training teachers')
     # TODO save model (as pth) and metrics (as csv)
     # TODO test loading teacher from pth and evaluating
