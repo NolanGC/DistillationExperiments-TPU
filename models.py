@@ -9,6 +9,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+class ClassifierEnsemble(torch.nn.Module):
+    def __init__(self, *models):
+        super().__init__()
+        self.components = torch.nn.ModuleList(models)
+
+    def forward(self, inputs):
+        """[batch_size x num_components x ...]"""
+        return torch.stack([model(inputs) for model in self.components], dim=1)
+
 # for cifar100
 class PreResnet(nn.Module):
     def __init__(self, num_classes=100, depth=56, planes=(16, 32, 64), input_size=32, skip_connections=True,

@@ -124,12 +124,15 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     print(metrics)
     return metrics
 
-
-def distillation_epoch(student, train_loader, optimizer, lr_scheduler, epoch,
+def distillation_epoch(student, train_loader, optimizer, lr_scheduler, device, epoch,
                        loss_fn):
     student.train()
-    train_loss, correct, agree, total, real_total = 0, 0, 0, 0, 0
-    kl = 0
+    train_loss = torch.tensor(0.).to(device)
+    correct = torch.tensor(0.).to(device)
+    agree = torch.tensor(0.).to(device)
+    total = 0
+    real_total = 0
+    kl = torch.tensor(0.).to(device)
     ece_stats = None
     num_batches = len(train_loader)
 
@@ -139,20 +142,20 @@ def distillation_epoch(student, train_loader, optimizer, lr_scheduler, epoch,
         loss.backward()
         xm.optimizer_step(optimizer)
 
-        train_loss += loss.item()
+        train_loss += loss
         student_predicted = student_logits.argmax(-1)
         teacher_predicted = teacher_logits.argmax(-1)
         full_batch_size = inputs.size(0)
         real_batch_size = targets.size(0)
         total += full_batch_size
         real_total += real_batch_size
-        correct += student_predicted[:real_batch_size].eq(targets).sum().item()
-        agree += student_predicted.eq(teacher_predicted).sum().item()
+        correct += student_predicted[:real_batch_size].eq(targets).sum()
+        agree += student_predicted.eq(teacher_predicted).sum()
 
         kl += kl_divergence(
             Categorical(logits=teacher_logits),
             Categorical(logits=student_logits)
-        ).mean().item()
+        ).mean()
 
         batch_ece_stats = batch_calibration_stats(student_logits[:real_batch_size], targets, num_bins=10)
         ece_stats = batch_ece_stats if ece_stats is None else [
