@@ -26,8 +26,8 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn
         metrics: a dictionary of metrics
     """
     net.train()
-    train_loss = 0
-    correct = 0
+    train_loss = torch.tensor(0.).to(device)
+    correct = torch.tensor(0.).to(device)
     total = 0
     para_train_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device)
     for batch_idx, (inputs, targets) in enumerate(para_train_loader):
@@ -37,10 +37,10 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn
         loss.backward()
         xm.optimizer_step(optimizer)
         outputs = outputs.to(device)
-        train_loss += loss.item()
+        train_loss += loss
         _, predicted = outputs.max(1)
         total += targets.size(0)
-        correct += predicted.eq(targets).sum().item()
+        correct += predicted.eq(targets).sum()
 
     lr_scheduler.step()
     metrics = dict(
@@ -66,12 +66,12 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
         metrics: a dictionary of metrics with format
     """
     net.eval()
-    test_loss = 0
-    correct = 0
+    test_loss = torch.tensor(0.).to(device) 
+    correct = torch.tensor(0.).to(device)
     total = 0
-    agree = 0
-    nll = 0
-    kl = 0
+    agree = torch.tensor(0.).to(device)
+    nll = torch.tensor(0.).to(device)
+    kl = torch.tensor(0.).to(device)
     ece_stats = None
     para_train_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device) 
     for bath_idx, batch in enumerate(para_train_loader):
@@ -85,18 +85,18 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
                 loss_args.append(teacher_logits)
             loss, logits = loss_fn(*loss_args)
 
-            test_loss += loss.item()
+            test_loss += loss
             _, predicted = logits.max(1)
             total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
-            nll += -F.log_softmax(logits, dim=-1)[..., targets].mean().item()
+            correct += predicted.eq(targets).sum()
+            nll += -F.log_softmax(logits, dim=-1)[..., targets].mean()
             if teacher is not None:
                 teacher_predicted = teacher_logits.argmax(-1)
-                agree += predicted.eq(teacher_predicted).sum().item()
+                agree += predicted.eq(teacher_predicted).sum()
                 kl += kl_divergence(
                     Categorical(logits=teacher_logits),
                     Categorical(logits=logits)
-                ).mean().item()
+                ).mean()
             batch_ece_stats = batch_calibration_stats(logits, targets, num_bins=10)
             ece_stats = batch_ece_stats if ece_stats is None else [
                 t1 + t2 for t1, t2 in zip(ece_stats, batch_ece_stats)

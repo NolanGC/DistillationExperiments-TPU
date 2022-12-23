@@ -38,7 +38,7 @@ dataset_dir = 'data/datasets'
 #                               experiment flags                               #
 # ---------------------------------------------------------------------------- #
 FLAGS = {}
-FLAGS['batch_size'] = 128
+FLAGS['batch_size'] = 16
 FLAGS['num_workers'] = 4 #TODO from XLA example, verify this number is optimal
 FLAGS['learning_rate'] = 5e-2
 FLAGS['momentum'] = 0.9
@@ -71,7 +71,6 @@ def main(rank):
           num_workers=FLAGS['num_workers'],
           drop_last=True)
     
-
     learning_rate = FLAGS['learning_rate'] * xm.xrt_world_size()
     device = xm.xla_device()
     model = WRAPPED_MODEL.to(device)
@@ -84,8 +83,8 @@ def main(rank):
     #TODO save initial model state dict
     records = []
     print('initial eval begin')
-    eval_metrics = eval_epoch(model, test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
-    records.append(eval_metrics)
+    #eval_metrics = eval_epoch(model, test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
+    #records.append(eval_metrics)
     print('training begin')
     for epoch in range(FLAGS['teacher_epochs']):
         print("epoch: ", epoch)
