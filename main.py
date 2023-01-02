@@ -39,18 +39,18 @@ dataset_dir = 'data/datasets'
 # ---------------------------------------------------------------------------- #
 FLAGS = {}
 FLAGS['batch_size'] = 16
-FLAGS['num_workers'] = 4 #TODO from XLA example, verify this number is optimal
+FLAGS['num_workers'] = 8 #TODO from XLA example, verify this number is optimal
 FLAGS['learning_rate'] = 5e-2
 FLAGS['momentum'] = 0.9
 FLAGS['weight_decay'] = 1e-4
 FLAGS['nestrov'] = True
 FLAGS['teacher_epochs'] = 1
-FLAGS['ensemble_size'] = 3
+FLAGS['student_epochs'] = 1
+FLAGS['ensemble_size'] = 2
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
 def main(rank):
     SERIAL_EXEC = xmp.MpSerialExecutor()
-    WRAPPED_MODEL = xmp.MpModelWrapper(PreResnet(depth=56))
 
     train_dataset, test_dataset = SERIAL_EXEC.run(get_dataset)
     train_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -58,6 +58,11 @@ def main(rank):
           num_replicas=xm.xrt_world_size(),
           rank=xm.get_ordinal(),
           shuffle=True)
+    test_sampler = torch.utils.data.distributed.DistributedSampler(
+            test_dataset,
+            num_replicas=xm.xrt_world_size(),
+            rank=xm.get_ordinal(),
+            shuffle=False)
     train_loader = torch.utils.data.DataLoader(
           train_dataset,
           batch_size=FLAGS['batch_size'],
@@ -67,13 +72,14 @@ def main(rank):
     test_loader = torch.utils.data.DataLoader(
           test_dataset,
           batch_size=FLAGS['batch_size'],
+          sampler=test_sampler,
           shuffle=False,
           num_workers=FLAGS['num_workers'],
           drop_last=True)
     
     learning_rate = FLAGS['learning_rate'] * xm.xrt_world_size()
     device = xm.xla_device()
-    model = WRAPPED_MODEL.to(device)
+    model = to(device)
     optimizer = optim.SGD(model.parameters(), lr=learning_rate,
                           momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov'])
     teacher_loss_fn = ClassifierTeacherLoss(model, device)
@@ -82,7 +88,8 @@ def main(rank):
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
     teachers = []
     for teacher_index in range(FLAGS['ensemble_size']):
-        print(f"training teacher {teacher_index}.")
+        print(f"training teacher {teacher_index}")
+        model = PreResnet(depth=56).to(device)
         records = []
         eval_metrics = eval_epoch(model, test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
         records.append(eval_metrics)
@@ -97,52 +104,51 @@ def main(rank):
                 metrics.update(eval_metrics)
             records.append(metrics)
             print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
+        teacher.append(model)
         xm.rendezvous("finalize")
     teacher = ClassifierEnsemble(*teachers)
-
     
-"""
-------------------------------------------------------------------------------------
-Distilling Data Preparation + Collect Initial Metrics
-------------------------------------------------------------------------------------
-"""
-distill_splits = [train_splits[i] for i in [0]] # splits is 0 in default config
+    """
+    ------------------------------------------------------------------------------------
+    Distilling Data Preparation + Collect Initial Metrics
+    ------------------------------------------------------------------------------------
+    """
+    distill_splits = [train_dataset] # splits is 0 in default config
 
-if FLAGS['permuted']:
-    distill_loader = PermutedDistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, teacher=teacher, datasets=distill_splits)
-else:
-    distill_loader = DistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, teacher=teacher, datasets=distill_splits)
-    
-teacher_train_metrics = eval_epoch(teacher, distill_loader, epoch=0,
-                                           loss_fn=ClassifierEnsembleLoss(teacher))
-teacher_test_metrics = eval_epoch(teacher, test_loader, epoch=0,
-                                          loss_fn=ClassifierEnsembleLoss(teacher))
+    if FLAGS['permuted']:
+        distill_loader = PermutedDistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, teacher=teacher, datasets=distill_splits)
+    else:
+        distill_loader = DistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, teacher=teacher, datasets=distill_splits)
+        
+    teacher_train_metrics = eval_epoch(teacher, distill_loader, epoch=0,
+                                               loss_fn=ClassifierEnsembleLoss(teacher))
+    teacher_test_metrics = eval_epoch(teacher, test_loader, epoch=0,
+                                              loss_fn=ClassifierEnsembleLoss(teacher))
+    """
+    ------------------------------------------------------------------------------------
+    Distilling Student Model
+    ------------------------------------------------------------------------------------
+    """
 
-"""
-------------------------------------------------------------------------------------
-Distilling Student Model
-------------------------------------------------------------------------------------
-"""
-
-WRAPPED_STUDENT_MODEL = xmp.MpModelWrapper(PreResnet(depth=56))
-student = WRAPPED_MODEL.to(device)
-student_base_loss = TeacherStudentFwdCrossEntLoss()
-student_loss = ClassifierStudentLoss(student, student_base_loss, 0.0) # alpha is set to zero
-optimizer = torch.optim.SGD(params= model.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
-lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
-records = []
-eval_metrics = eval_epoch(student, test_loader, epoch=0, loss_fn=student_loss, teacher=teacher)
-records.append(eval_metrics)
-for epoch in range(FLAGS['student_epochs']):
-  metrics = {}
-  train_metrics = distillation_epoch(student, distill_loader, optimizer,
-                                        lr_scheduler, epoch=epoch + 1, loss_fn=student_loss, freeze_bn=False)
-  metrics.update(train_metrics)
-  if(epoch % FLAGS['evaluation_frequency'] == 0):
-      eval_metrics = eval_epoch(student, test_loader, epoch=epoch + 1, loss_fn=student_loss, teacher=teacher)
-      metrics.update(eval_metrics)
-  print("student epoch: ", epoch, " metrics: ", metrics)
-  records.append(metrics)    
+    student = PreResnet(deptch=56).to(device)
+    student_base_loss = TeacherStudentFwdCrossEntLoss()
+    student_loss = ClassifierStudentLoss(student, student_base_loss, 0.0) # alpha is set to zero
+    optimizer = torch.optim.SGD(params= model.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
+    records = []
+    eval_metrics = eval_epoch(student, test_loader, epoch=0, loss_fn=student_loss, teacher=teacher)
+    records.append(eval_metrics)
+    for epoch in range(FLAGS['student_epochs']):
+      metrics = {}
+      train_metrics = distillation_epoch(student, distill_loader, optimizer,
+                                            lr_scheduler, epoch=epoch + 1, loss_fn=student_loss, freeze_bn=False)
+      metrics.update(train_metrics)
+      if(epoch % FLAGS['evaluation_frequency'] == 0):
+          eval_metrics = eval_epoch(student, test_loader, epoch=epoch + 1, loss_fn=student_loss, teacher=teacher)
+          metrics.update(eval_metrics)
+      print("student epoch: ", epoch, " metrics: ", metrics)
+      records.append(metrics)    
+    print('done')
 
 if __name__ == "__main__":
     xmp.spawn(main, args=(), nprocs=8, start_method='fork')
