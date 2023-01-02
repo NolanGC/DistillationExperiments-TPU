@@ -49,6 +49,7 @@ FLAGS['student_epochs'] = 1
 FLAGS['ensemble_size'] = 2
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
+FLAGS['permuted'] = True
 def main(rank):
     SERIAL_EXEC = xmp.MpSerialExecutor()
 
@@ -79,17 +80,13 @@ def main(rank):
     
     learning_rate = FLAGS['learning_rate'] * xm.xrt_world_size()
     device = xm.xla_device()
-    model = to(device)
-    optimizer = optim.SGD(model.parameters(), lr=learning_rate,
-                          momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov'])
-    teacher_loss_fn = ClassifierTeacherLoss(model, device)
-
-    optimizer = torch.optim.SGD(params= model.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
     teachers = []
     for teacher_index in range(FLAGS['ensemble_size']):
         print(f"training teacher {teacher_index}")
         model = PreResnet(depth=56).to(device)
+        optimizer = torch.optim.SGD(params= model.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
+        teacher_loss_fn = ClassifierTeacherLoss(model, device)
         records = []
         eval_metrics = eval_epoch(model, test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
         records.append(eval_metrics)
@@ -104,7 +101,7 @@ def main(rank):
                 metrics.update(eval_metrics)
             records.append(metrics)
             print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
-        teacher.append(model)
+        teachers.append(model)
         xm.rendezvous("finalize")
     teacher = ClassifierEnsemble(*teachers)
     
@@ -120,7 +117,9 @@ def main(rank):
     else:
         distill_loader = DistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, teacher=teacher, datasets=distill_splits)
         
-    teacher_train_metrics = eval_epoch(teacher, distill_loader, epoch=0,
+    
+    para_distill_loader = pl.ParallelLoader(distill_loader, [device]).per_device_loader(device)
+    teacher_train_metrics = eval_epoch(teacher, para_distill_loader, epoch=0,
                                                loss_fn=ClassifierEnsembleLoss(teacher))
     teacher_test_metrics = eval_epoch(teacher, test_loader, epoch=0,
                                               loss_fn=ClassifierEnsembleLoss(teacher))

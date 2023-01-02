@@ -31,7 +31,7 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn
     total = 0
     para_train_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device)
     for batch_idx, (inputs, targets) in enumerate(para_train_loader):
-        print(f"eval {batch_idx}/{len(para_train_loader)}")
+        print(f"supervised {batch_idx}/{len(para_train_loader)}")
         optimizer.zero_grad()
         
         loss, outputs = loss_fn(inputs, targets)

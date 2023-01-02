@@ -5,7 +5,6 @@ from omegaconf import ListConfig
 import perm_utils
 from utils import reduce_ensemble_logits
 
-
 class DistillLoader(object):
     def __init__(self, teacher, datasets, temp, batch_size, shuffle, drop_last, **kwargs):
         if isinstance(temp, ListConfig):
@@ -75,7 +74,6 @@ class PermutedDistillLoader(DistillLoader):
                 # iterate through each batch, permute the logits
                 permutation_matrices = perm_utils.batch_permutation_matrix(batch_size, logit_size, targets)
                 permuted_teacher_logits = torch.stack([permutation_matrices[i].float() @ teacher_logits[i] for i in range(batch_size)])
-
             assert len(bs_list) == len(self.temp)
             temp = torch.cat([
                 torch.ones(bs, 1) * t for bs, t in zip(bs_list, self.temp)
