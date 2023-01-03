@@ -2,6 +2,7 @@ import torch_xla
 import torch
 device='cuda' if torch.cuda.is_available() else 'cpu'
 
+
 import os
 import torch
 from transformers import BertForSequenceClassification, BertTokenizer,BertConfig
