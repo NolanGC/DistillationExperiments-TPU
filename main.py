@@ -114,9 +114,9 @@ def main(rank):
     distill_splits = [train_dataset] # splits is 0 in default config
 
     if FLAGS['permuted']:
-        distill_loader = PermutedDistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, device=device, teacher=teacher, datasets=distill_splits, device=device)
+        distill_loader = PermutedDistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, device=device, teacher=teacher, datasets=distill_splits)
     else:
-        distill_loader = DistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, device = device, teacher=teacher, datasets=distill_splits, device=device)
+        distill_loader = DistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, device = device, teacher=teacher, datasets=distill_splits)
     
     teacher_train_metrics = eval_epoch(teacher, distill_loader, device=device, epoch=0,
                                                loss_fn=ClassifierEnsembleLoss(teacher))
