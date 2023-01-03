@@ -21,6 +21,7 @@ from torchvision import datasets, transforms
 #                                module imports                                #
 # ---------------------------------------------------------------------------- #
 from models import PreResnet, ClassifierEnsemble
+from dataloaders import DistillLoader, PermutedDistillLoader
 from data import get_dataset
 from lossfns import ClassifierTeacherLoss
 from training import eval_epoch, supervised_epoch, distillation_epoch
@@ -113,15 +114,13 @@ def main(rank):
     distill_splits = [train_dataset] # splits is 0 in default config
 
     if FLAGS['permuted']:
-        distill_loader = PermutedDistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, teacher=teacher, datasets=distill_splits)
+        distill_loader = PermutedDistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, device=device, teacher=teacher, datasets=distill_splits, device=device)
     else:
-        distill_loader = DistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, teacher=teacher, datasets=distill_splits)
-        
+        distill_loader = DistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, device = device, teacher=teacher, datasets=distill_splits, device=device)
     
-    para_distill_loader = pl.ParallelLoader(distill_loader, [device]).per_device_loader(device)
-    teacher_train_metrics = eval_epoch(teacher, para_distill_loader, epoch=0,
+    teacher_train_metrics = eval_epoch(teacher, distill_loader, device=device, epoch=0,
                                                loss_fn=ClassifierEnsembleLoss(teacher))
-    teacher_test_metrics = eval_epoch(teacher, test_loader, epoch=0,
+    teacher_test_metrics = eval_epoch(teacher, test_loader, device=device, epoch=0,
                                               loss_fn=ClassifierEnsembleLoss(teacher))
     """
     ------------------------------------------------------------------------------------

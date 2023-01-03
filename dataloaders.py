@@ -1,21 +1,17 @@
 from torch.utils.data import DataLoader
 import torch
 import numpy as np
-from omegaconf import ListConfig
 import perm_utils
 from utils import reduce_ensemble_logits
 
 class DistillLoader(object):
-    def __init__(self, teacher, datasets, temp, batch_size, shuffle, drop_last, **kwargs):
-        if isinstance(temp, ListConfig):
-            assert len(temp) == len(datasets)
+    def __init__(self, teacher, datasets, temp, batch_size, shuffle, drop_last, device, **kwargs):
         if isinstance(temp, float):
             temp = [temp] * len(datasets)
-
         self.teacher = teacher
+        self.device = device
         self.temp = temp
         self.batch_size = batch_size
-
         self.loaders = self._make_loaders(datasets, batch_size, shuffle, drop_last)
 
     def __len__(self):
@@ -25,14 +21,11 @@ class DistillLoader(object):
         return self.generator
 
     def _make_loaders(self, datasets, total_batch_size, shuffle, drop_last):
-        assert self.synth_ratio < 1
-        num_real = sum([len(dset) for dset in datasets])
-        num_total = int(num_real / (1 - self.synth_ratio))
+        total_length = sum([len(dset) for dset in datasets])
         b_sizes = [
-            int(len(dset) / num_total * total_batch_size) for dset in datasets[:-1]
+            int(len(dset) / total_length * total_batch_size) for dset in datasets[:-1]
         ]
-        synth_bs = int(self.synth_ratio * total_batch_size)
-        b_sizes.append(total_batch_size - sum(b_sizes) - synth_bs)
+        b_sizes.append(total_batch_size - sum(b_sizes))
         loaders = [
             DataLoader(dset, bsize, shuffle, drop_last=drop_last) for dset, bsize in zip(datasets, b_sizes)
         ]
@@ -56,7 +49,7 @@ class DistillLoader(object):
             
 class PermutedDistillLoader(DistillLoader):
     def __init__(self, teacher, datasets, temp, batch_size, shuffle, drop_last, **kwargs):
-       super(PermutedDistillLoader, self).__init__(teacher, datasets, temp, batch_size, shuffle, drop_last, **kwargs)
+       super(PermutedDistillLoader, self).__init__(teacher, datasets, temp, batch_size, shuffle, drop_last, device,**kwargs)
 
     @property
     def generator(self):
