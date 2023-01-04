@@ -81,7 +81,8 @@ def main(rank):
     
     learning_rate = FLAGS['learning_rate'] * xm.xrt_world_size()
     device = xm.xla_device()
-    teachers = []
+    teachers = [PreResnet(depth=56).to(device)]
+    """
     for teacher_index in range(FLAGS['ensemble_size']):
         print(f"training teacher {teacher_index}")
         model = PreResnet(depth=56).to(device)
@@ -104,6 +105,7 @@ def main(rank):
             print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
         teachers.append(model)
         xm.rendezvous("finalize")
+        """
     teacher = ClassifierEnsemble(*teachers)
     
     """
@@ -126,8 +128,10 @@ def main(rank):
     
     teacher_train_metrics = eval_epoch(teacher, distill_loader, device=device, epoch=0,
                                                loss_fn=ClassifierEnsembleLoss(teacher, device))
+    print('checkpoint 1')
     teacher_test_metrics = eval_epoch(teacher, test_loader, device=device, epoch=0,
                                               loss_fn=ClassifierEnsembleLoss(teacher, device))
+    print('checkpoint2 ')
     """
     ------------------------------------------------------------------------------------
     Distilling Student Model

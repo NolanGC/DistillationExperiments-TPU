@@ -14,7 +14,7 @@ class DistillLoader(object):
         self.device = device
         self.temp = temp
         self.batch_size = batch_size
-        self.loaders = self._make_loaders(datasets, batch_size, shuffle, drop_last, sampler, num_workers)
+        self.loaders = self._make_loaders(dataset, drop_last, sampler, num_workers)
 
     def __len__(self):
         return min([len(ldr) for ldr in self.loaders])
@@ -22,17 +22,9 @@ class DistillLoader(object):
     def __iter__(self):
         return self.generator
 
-    def _make_loaders(self, datasets, total_batch_size, shuffle, drop_last, sampler, num_workers):
-        total_length = sum([len(dset) for dset in datasets])
-        b_sizes = [
-            int(len(dset) / total_length * total_batch_size) for dset in datasets[:-1]
-        ]
-        b_sizes.append(total_batch_size - sum(b_sizes))
-        loaders = []
-        for dset, bsize in zip(datasets, b_sizes):
-            loader = pl.ParallelLoader(DataLoader(dset, bsize, sampler=sampler, num_workers=num_workers, drop_last=drop_last), [self.device]).per_device_loader(self.device)
-            loaders.append(loader)
-        return loaders
+    def _make_loaders(self, dataset, drop_last, sampler, num_workers):
+        loader = pl.ParallelLoader(DataLoader(dataset, self.batch_size, sampler=sampler, num_workers=num_workers, drop_last=drop_last), [self.device]).per_device_loader(self.device)
+        return loader
 
     @property
     def generator(self):
