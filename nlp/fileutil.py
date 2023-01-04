@@ -2,6 +2,7 @@ import io
 import os
 import pathlib
 import torch
+import shutil
 
 try:
     import tensorflow as tf
@@ -73,13 +74,16 @@ class Platform:
     @staticmethod
     def load_model(path, primary_process_only=False, *args, **kwargs):
         dir, prefix = '.tmp', 'checkpoint'
+        master_file = os.path.join(dir, prefix)
         if xm.is_master_ordinal():
             if Platform.exists(dir): Platform.rmtree(dir)
             Platform.makedirs(dir)
-            tf.io.gfile.copy(path, os.path.join(dir, prefix), overwrite=True)
-        if not primary_process_only: xm.rendezvous('platforms.gcp.load_model.1')
+            tf.io.gfile.copy(path, master_file, overwrite=True)
 
-        m = torch.load(os.path.join(dir, prefix), *args, **kwargs)
-        if not primary_process_only: xm.rendezvous('platforms.gcp.load_model.2')
+        xm.rendezvous('platforms.gcp.load_model.1')
+        rank_file = os.path.join(dir, prefix + str(xm.get_ordinal()))
+        shutil.copyfile(master_file, rank_file)
+        m = torch.load(rank_file, *args, **kwargs)
+        xm.rendezvous('platforms.gcp.load_model.2')
 
         return m

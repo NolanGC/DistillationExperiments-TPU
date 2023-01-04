@@ -6,7 +6,6 @@ from fileutil import Platform
 import torch
 device='cuda' if torch.cuda.is_available() else 'cpu'
 
-
 import os
 import torch
 from transformers import BertForSequenceClassification, BertTokenizer,BertConfig
@@ -24,7 +23,10 @@ def _mp_fn(index):
     val_dataset = val_dataset.remove_columns(['label'])
     test_dataset = test_dataset.remove_columns(['label'])
     train_dataset = train_dataset.remove_columns(['label'])
+
     model = BertForSequenceClassification.from_pretrained('bert-base-uncased')
+    model.load_state_dict(Platform.load_model('gs://tianjin-distgen/sst2_teacher_model.pt', map_location=torch.device('cpu')))
+    
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
     MAX_LENGTH = 128
     train_dataset = train_dataset.map(lambda e: tokenizer(e['sentence'], truncation=True, padding='max_length', max_length=MAX_LENGTH), batched=True)
@@ -50,7 +52,7 @@ def _mp_fn(index):
     training_args = TrainingArguments(
         output_dir='./results',          #output directory
         learning_rate=1e-4,
-        num_train_epochs=1,
+        num_train_epochs=5,
         per_device_train_batch_size=32,                #batch size per device during training
         per_device_eval_batch_size=32,                #batch size for evaluation
         logging_dir='./logs',
@@ -73,9 +75,13 @@ def _mp_fn(index):
 
     xm.rendezvous("training_start")
 
-    # train_out = trainer.train()
+    train_out = trainer.train()
+    # print(trainer.evaluate())
     if xm.is_master_ordinal():
-        Platform.save_model(model.state_dict(), 'gs://tianjin-distgen/sst2_teacher_model.pt')
+        Platform.save_model(model.cpu().state_dict(), 'gs://tianjin-distgen/sst2_teacher_model.pt')
+
+
+    xm.rendezvous("training_end")
 
 if __name__ == '__main__':
-    xmp.spawn(_mp_fn, args=())
+    xmp.spawn(_mp_fn, nprocs=8, args=())
