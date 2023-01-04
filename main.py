@@ -23,7 +23,7 @@ from torchvision import datasets, transforms
 from models import PreResnet, ClassifierEnsemble
 from dataloaders import DistillLoader, PermutedDistillLoader
 from data import get_dataset
-from lossfns import ClassifierTeacherLoss
+from lossfns import ClassifierTeacherLoss, ClassifierEnsembleLoss
 from training import eval_epoch, supervised_epoch, distillation_epoch
 # ---------------------------------------------------------------------------- #
 #                                   CLI args                                   #
@@ -47,10 +47,10 @@ FLAGS['weight_decay'] = 1e-4
 FLAGS['nestrov'] = True
 FLAGS['teacher_epochs'] = 1
 FLAGS['student_epochs'] = 1
-FLAGS['ensemble_size'] = 2
+FLAGS['ensemble_size'] = 1
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
-FLAGS['permuted'] = True
+FLAGS['permuted'] = False
 def main(rank):
     SERIAL_EXEC = xmp.MpSerialExecutor()
 
@@ -113,15 +113,21 @@ def main(rank):
     """
     distill_splits = [train_dataset] # splits is 0 in default config
 
+    distill_sampler = torch.utils.data.distributed.DistributedSampler(
+          train_dataset,
+          num_replicas=xm.xrt_world_size(),
+          rank=xm.get_ordinal(),
+          shuffle=True)
+
     if FLAGS['permuted']:
-        distill_loader = PermutedDistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, device=device, teacher=teacher, datasets=distill_splits)
+        distill_loader = PermutedDistillLoader(temp=4.0, batch_size=FLAGS['batch_size'], shuffle=True, drop_last=False, device=device, sampler=distill_sampler, num_workers=FLAGS['num_workers'], teacher=teacher, datasets=distill_splits)
     else:
-        distill_loader = DistillLoader(temp=4.0, batch_size=128, shuffle=True, drop_last=False, device = device, teacher=teacher, datasets=distill_splits)
+        distill_loader = DistillLoader(temp=4.0, batch_size=FLAGS['batch_size'], shuffle=True, drop_last=False, device = device, sampler=distill_sampler, num_workers=FLAGS['num_workers'], teacher=teacher, datasets=distill_splits)
     
     teacher_train_metrics = eval_epoch(teacher, distill_loader, device=device, epoch=0,
-                                               loss_fn=ClassifierEnsembleLoss(teacher))
+                                               loss_fn=ClassifierEnsembleLoss(teacher, device))
     teacher_test_metrics = eval_epoch(teacher, test_loader, device=device, epoch=0,
-                                              loss_fn=ClassifierEnsembleLoss(teacher))
+                                              loss_fn=ClassifierEnsembleLoss(teacher, device))
     """
     ------------------------------------------------------------------------------------
     Distilling Student Model
