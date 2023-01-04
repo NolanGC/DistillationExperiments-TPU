@@ -77,9 +77,9 @@ class Platform:
             if Platform.exists(dir): Platform.rmtree(dir)
             Platform.makedirs(dir)
             tf.io.gfile.copy(path, os.path.join(dir, prefix), overwrite=True)
-        if not primary_process_only: xm.barrier('platforms.gcp.load_model.1')
+        if not primary_process_only: xm.rendezvous('platforms.gcp.load_model.1')
 
         m = torch.load(os.path.join(dir, prefix), *args, **kwargs)
-        if not primary_process_only: xm.barrier('platforms.gcp.load_model.2')
+        if not primary_process_only: xm.rendezvous('platforms.gcp.load_model.2')
 
         return m
