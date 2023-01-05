@@ -7,38 +7,31 @@ import torch_xla.distributed.parallel_loader as pl
 
 
 class DistillLoader(object):
-    def __init__(self, teacher, datasets, temp, batch_size, shuffle, drop_last, device, sampler, num_workers, **kwargs):
-        if isinstance(temp, float):
-            temp = [temp] * len(datasets)
+    def __init__(self, teacher, dataset, temp, batch_size, shuffle, drop_last, device, sampler, num_workers, **kwargs):
         self.teacher = teacher
         self.device = device
         self.temp = temp
         self.batch_size = batch_size
-        self.loaders = self._make_loaders(dataset, drop_last, sampler, num_workers)
+        self.loader = self._make_loader(dataset, drop_last, sampler, num_workers)
 
     def __len__(self):
-        return min([len(ldr) for ldr in self.loaders])
+        return len(self.loader) 
 
     def __iter__(self):
         return self.generator
 
-    def _make_loaders(self, dataset, drop_last, sampler, num_workers):
+    def _make_loader(self, dataset, drop_last, sampler, num_workers):
         loader = pl.ParallelLoader(DataLoader(dataset, self.batch_size, sampler=sampler, num_workers=num_workers, drop_last=drop_last), [self.device]).per_device_loader(self.device)
         return loader
 
     @property
     def generator(self):
-        for batches in zip(*self.loaders):
-            bs_list = [b[0].size(0) for b in batches]
-            inputs = torch.cat([b[0] for b in batches])
-            targets = torch.cat([b[1] for b in batches])
-
+        for inputs, targets in self.loader:
             with torch.no_grad():
                 logits = reduce_ensemble_logits(self.teacher(inputs))
-
-            assert len(bs_list) == len(self.temp)
+            current_batch_size = inputs.shape[0] # protect against uneven division
             temp = torch.cat([
-                torch.ones(bs, 1) * t for bs, t in zip(bs_list, self.temp)
+                torch.ones(current_batch_size, 1) * self.temp
             ])
             yield inputs, targets, logits, temp
             
