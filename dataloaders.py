@@ -41,10 +41,7 @@ class PermutedDistillLoader(DistillLoader):
 
     @property
     def generator(self):
-        for batches in zip(*self.loaders):
-            bs_list = [b[0].size(0) for b in batches]
-            inputs = torch.cat([b[0] for b in batches])
-            targets = torch.cat([b[1] for b in batches])
+        for inputs, targets in self.loaders:
             
             with torch.no_grad():
                 teacher_logits = reduce_ensemble_logits(self.teacher(inputs))

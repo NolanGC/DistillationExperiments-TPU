@@ -121,11 +121,11 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
 
     # add fidelity metrics
     metrics.update(dict(test_ts_agree=100. * agree / total, test_ts_kl=kl / len(loader)))
-    if(cka is None):
-        return metrics
-    if len(teacher.components) == 1 and hasattr(teacher.components[0], 'preacts') and with_cka:
-        cka = preact_cka(teacher.components[0], net, loader)
-        metrics.update({f'test_cka_{i}': val for i, val in enumerate(cka)})
+    #if(cka is None):
+    #    return metrics
+    #if len(teacher.components) == 1 and hasattr(teacher.components[0], 'preacts') and with_cka:
+    #    cka = preact_cka(teacher.components[0], net, loader)
+    #    metrics.update({f'test_cka_{i}': val for i, val in enumerate(cka)})
     print(metrics)
     return metrics
 

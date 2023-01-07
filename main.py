@@ -50,7 +50,7 @@ FLAGS['student_epochs'] = 1
 FLAGS['ensemble_size'] = 1
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
-FLAGS['permuted'] = False
+FLAGS['permuted'] = True
 def main(rank):
     SERIAL_EXEC = xmp.MpSerialExecutor()
 
@@ -124,13 +124,10 @@ def main(rank):
         distill_loader = PermutedDistillLoader(temp=4.0, batch_size=FLAGS['batch_size'], shuffle=True, drop_last=False, device=device, sampler=distill_sampler, num_workers=FLAGS['num_workers'], teacher=teacher, datasets=distill_splits)
     else:
         distill_loader = DistillLoader(temp=4.0, batch_size=FLAGS['batch_size'], shuffle=True, drop_last=False, device = device, sampler=distill_sampler, num_workers=FLAGS['num_workers'], teacher=teacher, dataset=train_dataset)
-    print("checkpoint 0")
     teacher_train_metrics = eval_epoch(teacher, distill_loader, device=device, epoch=0,
                                                loss_fn=ClassifierEnsembleLoss(teacher, device))
-    print('checkpoint 1')
     teacher_test_metrics = eval_epoch(teacher, para_test_loader, device=device, epoch=0,
                                               loss_fn=ClassifierEnsembleLoss(teacher, device))
-    print('checkpoint2 ')
     """
     ------------------------------------------------------------------------------------
     Distilling Student Model
@@ -147,14 +144,15 @@ def main(rank):
     for epoch in range(FLAGS['student_epochs']):
       metrics = {}
       train_metrics = distillation_epoch(student, distill_loader, optimizer,
-                                            lr_scheduler, epoch=epoch + 1, loss_fn=student_loss, freeze_bn=False)
+                                            lr_scheduler, epoch=epoch + 1, loss_fn=student_loss, device=device)
       metrics.update(train_metrics)
       if(epoch % FLAGS['evaluation_frequency'] == 0):
-          eval_metrics = eval_epoch(student, para_test_loader, epoch=epoch + 1, loss_fn=student_loss, teacher=teacher)
+          eval_metrics = eval_epoch(student, para_test_loader, device=device, epoch=epoch + 1, loss_fn=student_loss, teacher=teacher)
           metrics.update(eval_metrics)
       print("student epoch: ", epoch, " metrics: ", metrics)
       records.append(metrics)    
     print('done')
+    xm.rendezvous("finalize")
 
 if __name__ == "__main__":
     xmp.spawn(main, args=(), nprocs=8, start_method='fork')
