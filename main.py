@@ -83,11 +83,11 @@ def main(rank):
     device = xm.xla_device()
     para_train_loader = pl.ParallelLoader(train_loader, [device]).per_device_loader(device)
     para_test_loader = pl.ParallelLoader(test_loader, [device]).per_device_loader(device)
-    teachers = [PreResnet(depth=56).to(device)]
-    
+    teachers = [PreResnet(depth=56).to(device) for i in range(FLAGS['ensemble_size'])]
+    #save_to_gcp('single_teacher.pt', teachers[0].state_dict())
     for teacher_index in range(FLAGS['ensemble_size']):
         xm.master_print(f"training teacher {teacher_index}")
-        model = PreResnet(depth=56).to(device)
+        model = teachers[teacher_index]
         optimizer = torch.optim.SGD(params= model.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
         teacher_loss_fn = ClassifierTeacherLoss(model, device)
@@ -98,7 +98,7 @@ def main(rank):
         xm.master_print('<-- training begin -->')
         for epoch in range(FLAGS['teacher_epochs']):
             metrics = {}
-            train_metrics = supervised_epoch(model, para_train_loader, optimizer, lr_scheduler,device=device, epoch=epoch+1, loss_fn = teacher_loss_fn)
+            train_metrics = supervised_epoch(model, para_train_loader, optimizer, lr_scheduler, device=device, epoch=epoch+1, loss_fn = teacher_loss_fn)
             metrics.update(train_metrics)
             if(epoch % FLAGS['evaluation_frequency'] == 0):
                 eval_metrics = eval_epoch(model, para_test_loader, device=device, epoch=epoch+1, loss_fn=teacher_loss_fn)
@@ -107,7 +107,6 @@ def main(rank):
             xm.master_print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
         teachers.append(model)
         xm.rendezvous("finalize")
-     
     teacher = ClassifierEnsemble(*teachers)
     save_to_gcp('single_teacher.pt', teachers[0].state_dict())
     save_to_gcp('ensemble.pt', teacher.state_dict())

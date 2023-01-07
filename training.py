@@ -30,18 +30,25 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn
     correct = torch.tensor(0.).to(device)
     total = 0
     for batch_idx, (inputs, targets) in enumerate(loader):
-        xm.master_print(f"supervised {batch_idx}/{len(loader)}")
+        print(f"supervised {batch_idx}/{len(loader)}")
         optimizer.zero_grad()
-        
+        print('1') 
         loss, outputs = loss_fn(inputs, targets)
+        print('2')
         loss.backward()
-        xm.optimizer_step(optimizer)
+        print('3')
+        print('4')
         outputs = outputs.to(device)
+        print('5')
         train_loss += loss
+        print(6)
         _, predicted = outputs.max(1)
+        print(7)
         total += targets.size(0)
+        print(8)
         correct += predicted.eq(targets).sum()
-
+        xm.optimizer_step(optimizer)
+        print(9)
     lr_scheduler.step()
     metrics = dict(
             train_loss=train_loss / len(loader),
