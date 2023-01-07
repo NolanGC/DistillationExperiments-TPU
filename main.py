@@ -25,6 +25,7 @@ from dataloaders import DistillLoader, PermutedDistillLoader
 from data import get_dataset
 from lossfns import ClassifierTeacherLoss, ClassifierEnsembleLoss, TeacherStudentFwdCrossEntLoss, ClassifierStudentLoss
 from training import eval_epoch, supervised_epoch, distillation_epoch
+from gcp_utils import save_to_gcp
 # ---------------------------------------------------------------------------- #
 #                                   CLI args                                   #
 # ---------------------------------------------------------------------------- #
@@ -83,9 +84,9 @@ def main(rank):
     para_train_loader = pl.ParallelLoader(train_loader, [device]).per_device_loader(device)
     para_test_loader = pl.ParallelLoader(test_loader, [device]).per_device_loader(device)
     teachers = [PreResnet(depth=56).to(device)]
-    """
+    
     for teacher_index in range(FLAGS['ensemble_size']):
-        print(f"training teacher {teacher_index}")
+        xm.master_print(f"training teacher {teacher_index}")
         model = PreResnet(depth=56).to(device)
         optimizer = torch.optim.SGD(params= model.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
@@ -93,8 +94,8 @@ def main(rank):
         records = []
         eval_metrics = eval_epoch(model, para_test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
         records.append(eval_metrics)
-        print(f"initial eval metrics:", eval_metrics)
-        print('<-- training begin -->')
+        xm.master_print(f"initial eval metrics:", eval_metrics)
+        xm.master_print('<-- training begin -->')
         for epoch in range(FLAGS['teacher_epochs']):
             metrics = {}
             train_metrics = supervised_epoch(model, para_train_loader, optimizer, lr_scheduler,device=device, epoch=epoch+1, loss_fn = teacher_loss_fn)
@@ -103,18 +104,18 @@ def main(rank):
                 eval_metrics = eval_epoch(model, para_test_loader, device=device, epoch=epoch+1, loss_fn=teacher_loss_fn)
                 metrics.update(eval_metrics)
             records.append(metrics)
-            print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
+            xm.master_print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
         teachers.append(model)
         xm.rendezvous("finalize")
-        """
+     
     teacher = ClassifierEnsemble(*teachers)
+    save_to_gcp('single_teacher.pt', teachers[0].state_dict())
+    save_to_gcp('ensemble.pt', teacher.state_dict())
     """
     ------------------------------------------------------------------------------------
     Distilling Data Preparation + Collect Initial Metrics
     ------------------------------------------------------------------------------------
     """
-    distill_splits = [train_dataset] # splits is 0 in default config
-
     distill_sampler = torch.utils.data.distributed.DistributedSampler(
           train_dataset,
           num_replicas=xm.xrt_world_size(),
@@ -149,9 +150,10 @@ def main(rank):
       if(epoch % FLAGS['evaluation_frequency'] == 0):
           eval_metrics = eval_epoch(student, para_test_loader, device=device, epoch=epoch + 1, loss_fn=student_loss, teacher=teacher)
           metrics.update(eval_metrics)
-      print("student epoch: ", epoch, " metrics: ", metrics)
+      xm.master_print("student epoch: ", epoch, " metrics: ", metrics)
       records.append(metrics)    
-    print('done')
+    xm.master_print('done')
+    save_to_gcp('student.pt', student.state_dict())
     xm.rendezvous("finalize")
 
 if __name__ == "__main__":
