@@ -29,26 +29,18 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn
     train_loss = torch.tensor(0.).to(device)
     correct = torch.tensor(0.).to(device)
     total = 0
-    for batch_idx, (inputs, targets) in enumerate(loader):
-        print(f"supervised {batch_idx}/{len(loader)}")
+    para_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device)
+    for batch_idx, (inputs, targets) in enumerate(para_loader):
+        xm.master_print(f"supervised {batch_idx}/{len(loader)}")
         optimizer.zero_grad()
-        print('1') 
         loss, outputs = loss_fn(inputs, targets)
-        print('2')
         loss.backward()
-        print('3')
-        print('4')
         outputs = outputs.to(device)
-        print('5')
         train_loss += loss
-        print(6)
         _, predicted = outputs.max(1)
-        print(7)
         total += targets.size(0)
-        print(8)
         correct += predicted.eq(targets).sum()
         xm.optimizer_step(optimizer)
-        print(9)
     lr_scheduler.step()
     metrics = dict(
             train_loss=train_loss / len(loader),
@@ -59,7 +51,7 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn
     return metrics
 
 
-def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=True):
+def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=True, isDistillation=False):
     """
     Evaluate the model on the test set.
     Inputs: 
@@ -80,7 +72,11 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     nll = torch.tensor(0.).to(device)
     kl = torch.tensor(0.).to(device)
     ece_stats = None
-    for batch_idx, batch in enumerate(loader):
+    if(isDistillation):
+        para_loader = loader
+    else:
+        para_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device)
+    for batch_idx, batch in enumerate(para_loader):
         xm.master_print(f"eval {batch_idx}/{len(loader)}")
         with torch.no_grad():
             # [:2] to ignore teacher logits in the case of distillation

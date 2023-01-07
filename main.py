@@ -26,6 +26,7 @@ from data import get_dataset
 from lossfns import ClassifierTeacherLoss, ClassifierEnsembleLoss, TeacherStudentFwdCrossEntLoss, ClassifierStudentLoss
 from training import eval_epoch, supervised_epoch, distillation_epoch
 from gcp_utils import save_to_gcp
+from fileutil import Platform
 # ---------------------------------------------------------------------------- #
 #                                   CLI args                                   #
 # ---------------------------------------------------------------------------- #
@@ -81,10 +82,7 @@ def main(rank):
           drop_last=True)
     learning_rate = FLAGS['learning_rate'] * xm.xrt_world_size()
     device = xm.xla_device()
-    para_train_loader = pl.ParallelLoader(train_loader, [device]).per_device_loader(device)
-    para_test_loader = pl.ParallelLoader(test_loader, [device]).per_device_loader(device)
     teachers = [PreResnet(depth=56).to(device) for i in range(FLAGS['ensemble_size'])]
-    #save_to_gcp('single_teacher.pt', teachers[0].state_dict())
     for teacher_index in range(FLAGS['ensemble_size']):
         xm.master_print(f"training teacher {teacher_index}")
         model = teachers[teacher_index]
@@ -92,24 +90,26 @@ def main(rank):
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
         teacher_loss_fn = ClassifierTeacherLoss(model, device)
         records = []
-        eval_metrics = eval_epoch(model, para_test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
+        eval_metrics = eval_epoch(model, test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
         records.append(eval_metrics)
         xm.master_print(f"initial eval metrics:", eval_metrics)
         xm.master_print('<-- training begin -->')
         for epoch in range(FLAGS['teacher_epochs']):
             metrics = {}
-            train_metrics = supervised_epoch(model, para_train_loader, optimizer, lr_scheduler, device=device, epoch=epoch+1, loss_fn = teacher_loss_fn)
+            train_metrics = supervised_epoch(model, train_loader, optimizer, lr_scheduler, device=device, epoch=epoch+1, loss_fn = teacher_loss_fn)
             metrics.update(train_metrics)
             if(epoch % FLAGS['evaluation_frequency'] == 0):
-                eval_metrics = eval_epoch(model, para_test_loader, device=device, epoch=epoch+1, loss_fn=teacher_loss_fn)
+                eval_metrics = eval_epoch(model, test_loader, device=device, epoch=epoch+1, loss_fn=teacher_loss_fn)
                 metrics.update(eval_metrics)
             records.append(metrics)
             xm.master_print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
         teachers.append(model)
         xm.rendezvous("finalize")
     teacher = ClassifierEnsemble(*teachers)
-    save_to_gcp('single_teacher.pt', teachers[0].state_dict())
-    save_to_gcp('ensemble.pt', teacher.state_dict())
+    if xm.is_master_ordinal():
+        Platform.save_model(teachers[0].cpu().state_dict(), 'gs://tianjin-distgen/nolan/single_teacher_model.pt')
+        Platform.save_model(teacher.cpu().state_dict(), 'gs://tianjin-distgen/nolan/ensemble_teacher_model.pt')
+
     """
     ------------------------------------------------------------------------------------
     Distilling Data Preparation + Collect Initial Metrics
@@ -125,8 +125,8 @@ def main(rank):
     else:
         distill_loader = DistillLoader(temp=4.0, batch_size=FLAGS['batch_size'], shuffle=True, drop_last=True, device = device, sampler=distill_sampler, num_workers=FLAGS['num_workers'], teacher=teacher, dataset=train_dataset)
     teacher_train_metrics = eval_epoch(teacher, distill_loader, device=device, epoch=0,
-                                               loss_fn=ClassifierEnsembleLoss(teacher, device))
-    teacher_test_metrics = eval_epoch(teacher, para_test_loader, device=device, epoch=0,
+                                               loss_fn=ClassifierEnsembleLoss(teacher, device), isDistillation=True)
+    teacher_test_metrics = eval_epoch(teacher, loader, device=device, epoch=0,
                                               loss_fn=ClassifierEnsembleLoss(teacher, device))
     """
     ------------------------------------------------------------------------------------
@@ -139,20 +139,21 @@ def main(rank):
     optimizer = torch.optim.SGD(params= student.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
     records = []
-    eval_metrics = eval_epoch(student, para_test_loader, epoch=0, loss_fn=student_loss, teacher=teacher)
+    eval_metrics = eval_epoch(student, test_loader, epoch=0, loss_fn=student_loss, teacher=teacher)
     records.append(eval_metrics)
     for epoch in range(FLAGS['student_epochs']):
       metrics = {}
       train_metrics = distillation_epoch(student, distill_loader, optimizer,
-                                            lr_scheduler, epoch=epoch + 1, loss_fn=student_loss, device=device)
+                                            lr_scheduler, epoch=epoch + 1, loss_fn=student_loss, device=device, dataset=train_dataset, drop_last=True, sampler=distill_sampler, num_workers=FLAGS['num_workers'])
       metrics.update(train_metrics)
       if(epoch % FLAGS['evaluation_frequency'] == 0):
-          eval_metrics = eval_epoch(student, para_test_loader, device=device, epoch=epoch + 1, loss_fn=student_loss, teacher=teacher)
+          eval_metrics = eval_epoch(student, test_loader, device=device, epoch=epoch + 1, loss_fn=student_loss, teacher=teacher)
           metrics.update(eval_metrics)
       xm.master_print("student epoch: ", epoch, " metrics: ", metrics)
       records.append(metrics)    
     xm.master_print('done')
-    save_to_gcp('student.pt', student.state_dict())
+    if xm.is_master_ordinal():
+        Platform.save_model(student.cpu().state_dict(), 'gs://tianjin-distgen/nolan/student_model.pt')
     xm.rendezvous("finalize")
 
 if __name__ == "__main__":

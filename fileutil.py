@@ -1,54 +1,18 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-
-# This source code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
-
 import io
 import os
 import pathlib
 import torch
+import shutil
+
 try:
     import tensorflow as tf
 except ImportError:
     pass
 import tempfile
 
-from platforms import base
-from platforms.platform import get_platform
+import torch_xla.core.xla_model as xm
 
-
-class Platform(base.Platform):
-
-    _dataset_root = 'gs://jfrankle-results/open_lth/datasets'
-
-    @property
-    def root(self):
-        return 'gs://tianjin-openlth-data/open_lth/data'
-
-    @property
-    def dataset_root(self):
-        return Platform._dataset_root
-
-    @property
-    def imagenet_root(self):
-        return '/mnt/disks/imagenet-disk/imagenet'
-
-    @property
-    def tinyimagenet_root(self):
-        return '/mnt/disks/imagenet-disk/tinyimagenet'
-
-    @property
-    def wmt_root(self):
-        return self.dataset_root()
-
-    @property
-    def iwslt_root(self):
-        return '/mnt/disks/imagenet-disk/iwslt_de_en'
-
-    @property
-    def nlp_data_root(self):
-        raise NotImplementedError
-        return
+class Platform:
 
     @staticmethod
     def open(file, mode='r'): return tf.io.gfile.GFile(file, mode)
@@ -110,22 +74,16 @@ class Platform(base.Platform):
     @staticmethod
     def load_model(path, primary_process_only=False, *args, **kwargs):
         dir, prefix = '.tmp', 'checkpoint'
-        # If not in distributed mode, simply use temporary directory.
-        if get_platform().world_size == 1:
-            temp_dir = tempfile.TemporaryDirectory()
-            tf.io.gfile.copy(path, os.path.join(temp_dir.name, prefix), overwrite=True)
-            m = torch.load(os.path.join(temp_dir.name, prefix), *args, **kwargs)
-            # use temp_dir, and when done:
-            temp_dir.cleanup()
-            return m
-
-        if get_platform().is_primary_process:
+        master_file = os.path.join(dir, prefix)
+        if xm.is_master_ordinal():
             if Platform.exists(dir): Platform.rmtree(dir)
             Platform.makedirs(dir)
-            tf.io.gfile.copy(path, os.path.join(dir, prefix), overwrite=True)
-        if not primary_process_only: get_platform().barrier('platforms.gcp.load_model.1')
+            tf.io.gfile.copy(path, master_file, overwrite=True)
 
-        m = torch.load(os.path.join(dir, prefix), *args, **kwargs)
-        if not primary_process_only: get_platform().barrier('platforms.gcp.load_model.2')
+        xm.rendezvous('platforms.gcp.load_model.1')
+        rank_file = os.path.join(dir, prefix + str(xm.get_ordinal()))
+        shutil.copyfile(master_file, rank_file)
+        m = torch.load(rank_file, *args, **kwargs)
+        xm.rendezvous('platforms.gcp.load_model.2')
 
         return m
