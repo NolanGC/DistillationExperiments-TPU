@@ -23,7 +23,7 @@ from torchvision import datasets, transforms
 from models import PreResnet, ClassifierEnsemble
 from dataloaders import DistillLoader, PermutedDistillLoader
 from data import get_dataset
-from lossfns import ClassifierTeacherLoss, ClassifierEnsembleLoss
+from lossfns import ClassifierTeacherLoss, ClassifierEnsembleLoss, TeacherStudentFwdCrossEntLoss, ClassifierStudentLoss
 from training import eval_epoch, supervised_epoch, distillation_epoch
 # ---------------------------------------------------------------------------- #
 #                                   CLI args                                   #
@@ -78,9 +78,10 @@ def main(rank):
           shuffle=False,
           num_workers=FLAGS['num_workers'],
           drop_last=True)
-    
     learning_rate = FLAGS['learning_rate'] * xm.xrt_world_size()
     device = xm.xla_device()
+    para_train_loader = pl.ParallelLoader(train_loader, [device]).per_device_loader(device)
+    para_test_loader = pl.ParallelLoader(test_loader, [device]).per_device_loader(device)
     teachers = [PreResnet(depth=56).to(device)]
     """
     for teacher_index in range(FLAGS['ensemble_size']):
@@ -90,16 +91,16 @@ def main(rank):
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
         teacher_loss_fn = ClassifierTeacherLoss(model, device)
         records = []
-        eval_metrics = eval_epoch(model, test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
+        eval_metrics = eval_epoch(model, para_test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
         records.append(eval_metrics)
         print(f"initial eval metrics:", eval_metrics)
         print('<-- training begin -->')
         for epoch in range(FLAGS['teacher_epochs']):
             metrics = {}
-            train_metrics = supervised_epoch(model, train_loader, optimizer, lr_scheduler,device=device, epoch=epoch+1, loss_fn = teacher_loss_fn)
+            train_metrics = supervised_epoch(model, para_train_loader, optimizer, lr_scheduler,device=device, epoch=epoch+1, loss_fn = teacher_loss_fn)
             metrics.update(train_metrics)
             if(epoch % FLAGS['evaluation_frequency'] == 0):
-                eval_metrics = eval_epoch(model, test_loader, device=device, epoch=epoch+1, loss_fn=teacher_loss_fn)
+                eval_metrics = eval_epoch(model, para_test_loader, device=device, epoch=epoch+1, loss_fn=teacher_loss_fn)
                 metrics.update(eval_metrics)
             records.append(metrics)
             print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
@@ -107,7 +108,6 @@ def main(rank):
         xm.rendezvous("finalize")
         """
     teacher = ClassifierEnsemble(*teachers)
-    
     """
     ------------------------------------------------------------------------------------
     Distilling Data Preparation + Collect Initial Metrics
@@ -120,7 +120,6 @@ def main(rank):
           num_replicas=xm.xrt_world_size(),
           rank=xm.get_ordinal(),
           shuffle=True)
-
     if FLAGS['permuted']:
         distill_loader = PermutedDistillLoader(temp=4.0, batch_size=FLAGS['batch_size'], shuffle=True, drop_last=False, device=device, sampler=distill_sampler, num_workers=FLAGS['num_workers'], teacher=teacher, datasets=distill_splits)
     else:
@@ -129,7 +128,7 @@ def main(rank):
     teacher_train_metrics = eval_epoch(teacher, distill_loader, device=device, epoch=0,
                                                loss_fn=ClassifierEnsembleLoss(teacher, device))
     print('checkpoint 1')
-    teacher_test_metrics = eval_epoch(teacher, test_loader, device=device, epoch=0,
+    teacher_test_metrics = eval_epoch(teacher, para_test_loader, device=device, epoch=0,
                                               loss_fn=ClassifierEnsembleLoss(teacher, device))
     print('checkpoint2 ')
     """
@@ -140,10 +139,11 @@ def main(rank):
     student = PreResnet(deptch=56).to(device)
     student_base_loss = TeacherStudentFwdCrossEntLoss()
     student_loss = ClassifierStudentLoss(student, student_base_loss, 0.0) # alpha is set to zero
-    optimizer = torch.optim.SGD(params= model.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
+    optimizer = torch.optim.SGD(params= student.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
+    xm.optimizer_step(optimizer)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
     records = []
-    eval_metrics = eval_epoch(student, test_loader, epoch=0, loss_fn=student_loss, teacher=teacher)
+    eval_metrics = eval_epoch(student, para_test_loader, epoch=0, loss_fn=student_loss, teacher=teacher)
     records.append(eval_metrics)
     for epoch in range(FLAGS['student_epochs']):
       metrics = {}
@@ -151,7 +151,7 @@ def main(rank):
                                             lr_scheduler, epoch=epoch + 1, loss_fn=student_loss, freeze_bn=False)
       metrics.update(train_metrics)
       if(epoch % FLAGS['evaluation_frequency'] == 0):
-          eval_metrics = eval_epoch(student, test_loader, epoch=epoch + 1, loss_fn=student_loss, teacher=teacher)
+          eval_metrics = eval_epoch(student, para_test_loader, epoch=epoch + 1, loss_fn=student_loss, teacher=teacher)
           metrics.update(eval_metrics)
       print("student epoch: ", epoch, " metrics: ", metrics)
       records.append(metrics)    

@@ -29,9 +29,8 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn
     train_loss = torch.tensor(0.).to(device)
     correct = torch.tensor(0.).to(device)
     total = 0
-    para_train_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device)
-    for batch_idx, (inputs, targets) in enumerate(para_train_loader):
-        print(f"supervised {batch_idx}/{len(para_train_loader)}")
+    for batch_idx, (inputs, targets) in enumerate(loader):
+        print(f"supervised {batch_idx}/{len(loader)}")
         optimizer.zero_grad()
         
         loss, outputs = loss_fn(inputs, targets)
@@ -74,9 +73,8 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     nll = torch.tensor(0.).to(device)
     kl = torch.tensor(0.).to(device)
     ece_stats = None
-    para_train_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device) 
-    for batch_idx, batch in enumerate(para_train_loader):
-        print(f"eval {batch_idx}/{len(para_train_loader)}")
+    for batch_idx, batch in enumerate(loader):
+        print(f"eval {batch_idx}/{len(loader)}")
         with torch.no_grad():
             # [:2] to ignore teacher logits in the case of distillation
             inputs, targets = batch[:2]
