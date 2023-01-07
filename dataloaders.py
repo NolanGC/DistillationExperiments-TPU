@@ -36,24 +36,23 @@ class DistillLoader(object):
             yield inputs, targets, logits, temp
             
 class PermutedDistillLoader(DistillLoader):
-    def __init__(self, teacher, datasets, temp, batch_size, shuffle, drop_last, device, **kwargs):
-       super(PermutedDistillLoader, self).__init__(teacher, datasets, temp, batch_size, shuffle, drop_last, device,**kwargs)
+    def __init__(self, teacher, dataset, temp, batch_size, shuffle, drop_last, device, **kwargs):
+       super(PermutedDistillLoader, self).__init__(teacher, dataset, temp, batch_size, shuffle, drop_last, device,**kwargs)
 
     @property
     def generator(self):
-        for inputs, targets in self.loaders:
+        for inputs, targets in self.loader:
             
             with torch.no_grad():
                 teacher_logits = reduce_ensemble_logits(self.teacher(inputs))
-                batch_size = teacher_logits.shape[0]
+                batch_size = inputs.shape[0]
                 # i.e for cifar100, logit_size = 100
                 logit_size = teacher_logits.shape[1]
                 # this will store our permuted teacher logits
                 # iterate through each batch, permute the logits
                 permutation_matrices = perm_utils.batch_permutation_matrix(batch_size, logit_size, targets).to(self.device)
                 permuted_teacher_logits = torch.stack([permutation_matrices[i].float() @ teacher_logits[i] for i in range(batch_size)])
-            assert len(bs_list) == len(self.temp)
             temp = torch.cat([
-                torch.ones(bs, 1) * t for bs, t in zip(bs_list, self.temp)
+                torch.ones(batch_size, 1) * self.temp
             ])
             yield inputs, targets, permuted_teacher_logits, temp

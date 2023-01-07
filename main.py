@@ -121,9 +121,9 @@ def main(rank):
           rank=xm.get_ordinal(),
           shuffle=True)
     if FLAGS['permuted']:
-        distill_loader = PermutedDistillLoader(temp=4.0, batch_size=FLAGS['batch_size'], shuffle=True, drop_last=False, device=device, sampler=distill_sampler, num_workers=FLAGS['num_workers'], teacher=teacher, datasets=distill_splits)
+        distill_loader = PermutedDistillLoader(temp=4.0, batch_size=FLAGS['batch_size'], shuffle=True, drop_last=True, device=device, sampler=distill_sampler, num_workers=FLAGS['num_workers'], teacher=teacher, dataset=train_dataset)
     else:
-        distill_loader = DistillLoader(temp=4.0, batch_size=FLAGS['batch_size'], shuffle=True, drop_last=False, device = device, sampler=distill_sampler, num_workers=FLAGS['num_workers'], teacher=teacher, dataset=train_dataset)
+        distill_loader = DistillLoader(temp=4.0, batch_size=FLAGS['batch_size'], shuffle=True, drop_last=True, device = device, sampler=distill_sampler, num_workers=FLAGS['num_workers'], teacher=teacher, dataset=train_dataset)
     teacher_train_metrics = eval_epoch(teacher, distill_loader, device=device, epoch=0,
                                                loss_fn=ClassifierEnsembleLoss(teacher, device))
     teacher_test_metrics = eval_epoch(teacher, para_test_loader, device=device, epoch=0,
