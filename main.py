@@ -140,7 +140,6 @@ def main(rank):
     student_base_loss = TeacherStudentFwdCrossEntLoss()
     student_loss = ClassifierStudentLoss(student, student_base_loss, 0.0) # alpha is set to zero
     optimizer = torch.optim.SGD(params= student.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
-    xm.optimizer_step(optimizer)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
     records = []
     eval_metrics = eval_epoch(student, para_test_loader, epoch=0, loss_fn=student_loss, teacher=teacher)

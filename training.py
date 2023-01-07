@@ -97,21 +97,23 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
                     Categorical(logits=teacher_logits),
                     Categorical(logits=logits)
                 ).mean()
-            batch_ece_stats = batch_calibration_stats(logits, targets, num_bins=10)
-            ece_stats = batch_ece_stats if ece_stats is None else [
-                t1 + t2 for t1, t2 in zip(ece_stats, batch_ece_stats)
-            ]
+            #batch_ece_stats = batch_calibration_stats(logits, targets, num_bins=10)
+            #ece_stats = batch_ece_stats if ece_stats is None else [
+            #    t1 + t2 for t1, t2 in zip(ece_stats, batch_ece_stats)
+            #]
             xm.mark_step()
     xm.mark_step()
-    ece = expected_calibration_err(*ece_stats, num_samples=total)
+    if(not ece_stats is None):
+        ece = expected_calibration_err(*ece_stats, num_samples=total)
+    else:
+        ece = None
     metrics = dict(
         test_loss=test_loss / len(loader),
         test_acc=100. * correct / total,
-        test_ece=ece,
+        #test_ece=ece,
         test_nll=nll / len(loader),
         epoch=epoch,
     )
-
     # only return generalization metrics if there is no teacher
     if teacher is None:
         print(metrics)
@@ -119,6 +121,8 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
 
     # add fidelity metrics
     metrics.update(dict(test_ts_agree=100. * agree / total, test_ts_kl=kl / len(loader)))
+    if(cka is None):
+        return metrics
     if len(teacher.components) == 1 and hasattr(teacher.components[0], 'preacts') and with_cka:
         cka = preact_cka(teacher.components[0], net, loader)
         metrics.update({f'test_cka_{i}': val for i, val in enumerate(cka)})
@@ -136,14 +140,12 @@ def distillation_epoch(student, train_loader, optimizer, lr_scheduler, device, e
     kl = torch.tensor(0.).to(device)
     ece_stats = None
     num_batches = len(train_loader)
-    para_distill_loader  = pl.ParallelLoader(loader, [device]).per_device_loader(device) 
-    for batch_idx, (inputs, targets, teacher_logits, temp) in enumerate(para_distill_loader):
+    for batch_idx, (inputs, targets, teacher_logits, temp) in enumerate(train_loader):
         print(f"distill {batch_idx}/{len(para_distill_loader)}")
         optimizer.zero_grad()
         loss, student_logits = loss_fn(inputs, targets, teacher_logits, temp)
         loss.backward()
         xm.optimizer_step(optimizer)
-
         train_loss += loss
         student_predicted = student_logits.argmax(-1)
         teacher_predicted = teacher_logits.argmax(-1)
@@ -167,7 +169,10 @@ def distillation_epoch(student, train_loader, optimizer, lr_scheduler, device, e
     lr_scheduler.step()
     if hasattr(loss_fn.base_loss, 'step'):
         loss_fn.base_loss.step()
-    ece = expected_calibration_err(*ece_stats, num_samples=total)
+    if(ece_stats):
+        ece = expected_calibration_err(*ece_stats, num_samples=total)
+    else:
+        ece = None
     metrics = dict(
             train_loss=train_loss / num_batches,
             train_acc=100 * correct / real_total,
