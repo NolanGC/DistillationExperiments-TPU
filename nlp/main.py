@@ -26,7 +26,7 @@ def _mp_fn(index):
 
     model = BertForSequenceClassification.from_pretrained('bert-base-uncased')
     model.load_state_dict(Platform.load_model('gs://tianjin-distgen/sst2_teacher_model.pt', map_location=torch.device('cpu')))
-    
+
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
     MAX_LENGTH = 128
     train_dataset = train_dataset.map(lambda e: tokenizer(e['sentence'], truncation=True, padding='max_length', max_length=MAX_LENGTH), batched=True)
