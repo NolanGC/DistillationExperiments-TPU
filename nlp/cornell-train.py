@@ -109,9 +109,10 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id,pred
     device = xm.xla_device()
 
     for _ in train_iterator:
-        train_dataloader = pl.ParallelLoader(
+        xm.master_print("new epoch")
+        para_train_dataloader = pl.ParallelLoader(
             train_dataloader, [device]).per_device_loader(device)
-        epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=not xm.is_master_ordinal())
+        epoch_iterator = tqdm(para_train_dataloader, desc="Iteration", disable=True)
         for step, batch in enumerate(epoch_iterator):
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
@@ -127,6 +128,7 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id,pred
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
             loss.backward()
+            xm.master_print("step:{} loss:{}".format(step, loss))
 
             tr_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
@@ -138,11 +140,10 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id,pred
                 xm.mark_step()
                 global_step += 1
 
-                # if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                #     # Log metrics
-                #     if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
-                #         results, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="dev")
-                #     logging_loss = tr_loss
+                if xm.is_master_ordinal() and args.logging_steps > 0 and global_step % args.logging_steps == 0:
+                    # Log metrics
+                    if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
+                        results, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="dev")
 
                 # if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
                 #     # Save model checkpoint
@@ -157,6 +158,7 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id,pred
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
                 break
+
         predict_callback(model,global_step)
         if args.max_steps > 0 and global_step > args.max_steps:
             train_iterator.close()
@@ -167,26 +169,29 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id,pred
 
 def evaluate(args, model, tokenizer, labels, pad_token_label_id, mode, prefix=""):
     eval_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode=mode)
-
-    args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
-    # Note that DistributedSampler samples randomly
-    eval_sampler = SequentialSampler(eval_dataset) if args.local_rank == -1 else DistributedSampler(eval_dataset)
-    eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
-
-    # multi-gpu evaluate
-    if args.n_gpu > 1:
-        model = torch.nn.DataParallel(model)
+    eval_sampler = torch.utils.data.distributed.DistributedSampler(
+        eval_dataset,
+        num_replicas=xm.xrt_world_size(),
+        rank=xm.get_ordinal(),
+        shuffle=True,
+        seed=42)
+    eval_dataloader = torch.utils.data.DataLoader(
+        eval_dataset,
+        batch_size=args.per_gpu_eval_batch_size,
+        sampler=eval_sampler,
+        num_workers=8,
+        drop_last=False)
 
     # Eval!
     logger.info("***** Running evaluation %s *****", prefix)
     logger.info("  Num examples = %d", len(eval_dataset))
-    logger.info("  Batch size = %d", args.eval_batch_size)
+    logger.info("  Batch size = %d", args.per_gpu_eval_batch_size)
     eval_loss = 0.0
     nb_eval_steps = 0
     preds = None
     out_label_ids = None
     model.eval()
-    for batch in tqdm(eval_dataloader, desc="Evaluating"):
+    for batch in tqdm(eval_dataloader, desc="Evaluating", disable=True):
         batch = tuple(t.to(args.device) for t in batch)
 
         with torch.no_grad():
@@ -198,9 +203,6 @@ def evaluate(args, model, tokenizer, labels, pad_token_label_id, mode, prefix=""
             outputs = model(**inputs)
             tmp_eval_loss, logits = outputs[:2]
 
-            if args.n_gpu > 1:
-                tmp_eval_loss = tmp_eval_loss.mean()  # mean() to average on multi-gpu parallel evaluating
-
             eval_loss += tmp_eval_loss.item()
         nb_eval_steps += 1
         if preds is None:
@@ -209,6 +211,7 @@ def evaluate(args, model, tokenizer, labels, pad_token_label_id, mode, prefix=""
         else:
             preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
             out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
+        xm.mark_step()
 
     eval_loss = eval_loss / nb_eval_steps
     preds = np.argmax(preds, axis=2)
@@ -328,9 +331,8 @@ def _mp_fn(index, args):
         config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
         # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
         pad_token_label_id = CrossEntropyLoss().ignore_index
-        if args.do_predict and args.local_rank in [-1, 0]:
-            tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
-            evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test")
+        tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
+        evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test")
         model.train()
 
     # Training
@@ -340,7 +342,7 @@ def _mp_fn(index, args):
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
     # Saving best-practices: if you use defaults names for the model, you can reload it using from_pretrained()
-    if args.do_train and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
+    if args.do_train and xm.is_master_ordinal():
         # Create output directory if needed
         if not os.path.exists(args.output_dir) and args.local_rank in [-1, 0]:
             os.makedirs(args.output_dir)
@@ -349,15 +351,20 @@ def _mp_fn(index, args):
         # Save a trained model, configuration and tokenizer using `save_pretrained()`.
         # They can then be reloaded using `from_pretrained()`
         model_to_save = model.module if hasattr(model, "module") else model  # Take care of distributed/parallel training
-        model_to_save.save_pretrained(args.output_dir)
+
+        model_to_save.cpu().save_pretrained(args.output_dir)
         tokenizer.save_pretrained(args.output_dir)
+        model_to_save.to(args.device)
+        model_to_save.to(args.device)
 
         # Good practice: save your training arguments together with the trained model
         torch.save(args, os.path.join(args.output_dir, "training_args.bin"))
 
+    xm.rendezvous("model saving barrier")
+
     # Evaluation
     results = {}
-    if args.do_eval and args.local_rank in [-1, 0]:
+    if args.do_eval:
         tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
         checkpoints = [args.output_dir]
         if args.eval_all_checkpoints:

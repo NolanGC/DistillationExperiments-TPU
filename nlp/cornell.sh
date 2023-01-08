@@ -1,6 +1,6 @@
 export OUTPUT_DIR=outputs-model-base
 export BATCH_SIZE=32
-export NUM_EPOCHS=3
+export NUM_EPOCHS=1.0
 export SAVE_STEPS=750
 export SEED=42
 export MAX_LENGTH=128
@@ -13,6 +13,7 @@ python3 cornell-train.py \
 --max_seq_length  $MAX_LENGTH \
 --num_train_epochs $NUM_EPOCHS \
 --per_gpu_train_batch_size $BATCH_SIZE \
+--per_gpu_eval_batch_size $BATCH_SIZE \
 --save_steps $SAVE_STEPS \
 --seed $SEED \
 --do_train \
