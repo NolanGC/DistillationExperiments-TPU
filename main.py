@@ -51,7 +51,7 @@ FLAGS['student_epochs'] = 300
 FLAGS['ensemble_size'] = 3
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
-FLAGS['permuted'] = True
+FLAGS['permuted'] = False
 def main(rank):
     SERIAL_EXEC = xmp.MpSerialExecutor()
 
@@ -108,8 +108,8 @@ def main(rank):
     
     teacher = ClassifierEnsemble(*teachers)
     if xm.is_master_ordinal():
-        Platform.save_model(teachers[0].cpu().state_dict(), 'gs://tianjin-distgen/nolan/single_teacher_model.pt')
-        Platform.save_model(teacher.cpu().state_dict(), 'gs://tianjin-distgen/nolan/ensemble_teacher_model.pt')
+        Platform.save_model(teachers[0].cpu().state_dict(), 'gs://tianjin-distgen/nolan/NON-PERMUTE_single_teacher_model.pt')
+        Platform.save_model(teacher.cpu().state_dict(), 'gs://tianjin-distgen/nolan/NON_PERMUTE_ensemble_teacher_model.pt')
 
     """
     ------------------------------------------------------------------------------------
@@ -156,7 +156,7 @@ def main(rank):
       records.append(metrics)    
     xm.master_print('done')
     if xm.is_master_ordinal():
-        Platform.save_model(student.cpu().state_dict(), 'gs://tianjin-distgen/nolan/student_model.pt')
+        Platform.save_model(student.cpu().state_dict(), 'gs://tianjin-distgen/nolan/NON_PERMUTE_student_model.pt')
     xm.rendezvous("finalize")
 
 if __name__ == "__main__":
