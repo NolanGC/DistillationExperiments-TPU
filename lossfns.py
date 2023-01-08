@@ -3,14 +3,17 @@ import torch.nn.functional as F
 from utils import reduce_ensemble_logits
 
 class ClassifierStudentLoss(object):
-    def __init__(self, student_model, base_loss, alpha=0.9):
+    def __init__(self, student_model, base_loss, device=None, alpha=0.9):
         self.student = student_model
+        self.device = device
         self.base_loss = base_loss
         self.alpha = alpha
 
     def __call__(self, inputs, targets, teacher_logits, temp=None):
         real_batch_size = targets.size(0)
-        student_logits = self.student(inputs.to(self.student.parameters().device))
+        self.student.to(self.device)
+        self.student.to(self.device)
+        student_logits = self.student(inputs.to(self.device))
         hard_loss = F.cross_entropy(student_logits[:real_batch_size], targets)
         # temp = torch.ones_like(student_logits) if temp is None else temp.unsqueeze(-1)
         temp = torch.ones_like(student_logits) if temp is None else temp

@@ -13,7 +13,8 @@ class DistillLoader(object):
         self.temp = temp
         self.batch_size = batch_size
         self.loader = self._make_loader(dataset, drop_last, sampler, num_workers)
-
+        print("LOADER", self.loader)
+        
     def __len__(self):
         return len(self.loader) 
 
@@ -26,7 +27,9 @@ class DistillLoader(object):
 
     @property
     def generator(self):
+        self.teacher.to(self.device)
         for inputs, targets in self.loader:
+            print(inputs.device)
             with torch.no_grad():
                 logits = reduce_ensemble_logits(self.teacher(inputs))
             current_batch_size = inputs.shape[0] # protect against uneven division
@@ -41,8 +44,11 @@ class PermutedDistillLoader(DistillLoader):
 
     @property
     def generator(self):
+        self.teacher.to(self.device)
         for inputs, targets in self.loader:
-            
+            print(inputs.device) 
+            inputs.to(self.device)
+            targets.to(self.device)
             with torch.no_grad():
                 teacher_logits = reduce_ensemble_logits(self.teacher(inputs))
                 batch_size = inputs.shape[0]
