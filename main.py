@@ -46,9 +46,9 @@ FLAGS['learning_rate'] = 5e-2
 FLAGS['momentum'] = 0.9
 FLAGS['weight_decay'] = 1e-4
 FLAGS['nestrov'] = True
-FLAGS['teacher_epochs'] = 1
-FLAGS['student_epochs'] = 1
-FLAGS['ensemble_size'] = 1
+FLAGS['teacher_epochs'] = 2
+FLAGS['student_epochs'] = 2
+FLAGS['ensemble_size'] = 2
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
 FLAGS['permuted'] = True
@@ -107,9 +107,9 @@ def main(rank):
         xm.rendezvous("finalize")
     
     teacher = ClassifierEnsemble(*teachers)
-    #if xm.is_master_ordinal():
-    #    Platform.save_model(teachers[0].cpu().state_dict(), 'gs://tianjin-distgen/nolan/single_teacher_model.pt')
-    #    Platform.save_model(teacher.cpu().state_dict(), 'gs://tianjin-distgen/nolan/ensemble_teacher_model.pt')
+    if xm.is_master_ordinal():
+        Platform.save_model(teachers[0].cpu().state_dict(), 'gs://tianjin-distgen/nolan/single_teacher_model.pt')
+        Platform.save_model(teacher.cpu().state_dict(), 'gs://tianjin-distgen/nolan/ensemble_teacher_model.pt')
 
     """
     ------------------------------------------------------------------------------------
@@ -155,8 +155,8 @@ def main(rank):
       xm.master_print("student epoch: ", epoch, " metrics: ", metrics)
       records.append(metrics)    
     xm.master_print('done')
-    #if xm.is_master_ordinal():
-    #    Platform.save_model(student.cpu().state_dict(), 'gs://tianjin-distgen/nolan/student_model.pt')
+    if xm.is_master_ordinal():
+        Platform.save_model(student.cpu().state_dict(), 'gs://tianjin-distgen/nolan/student_model.pt')
     xm.rendezvous("finalize")
 
 if __name__ == "__main__":
