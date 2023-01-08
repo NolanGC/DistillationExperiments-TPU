@@ -82,7 +82,7 @@ def main(rank):
     learning_rate = FLAGS['learning_rate'] * xm.xrt_world_size()
     device = xm.xla_device()
     teachers = [PreResnet(depth=56).to(device) for i in range(FLAGS['ensemble_size'])]
-    """
+    
     for teacher_index in range(FLAGS['ensemble_size']):
         xm.master_print(f"training teacher {teacher_index}")
         model = teachers[teacher_index]
@@ -105,11 +105,11 @@ def main(rank):
             xm.master_print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
         teachers.append(model)
         xm.rendezvous("finalize")
-    """
+    
     teacher = ClassifierEnsemble(*teachers)
-    if xm.is_master_ordinal():
-        Platform.save_model(teachers[0].cpu().state_dict(), 'gs://tianjin-distgen/nolan/single_teacher_model.pt')
-        Platform.save_model(teacher.cpu().state_dict(), 'gs://tianjin-distgen/nolan/ensemble_teacher_model.pt')
+    #if xm.is_master_ordinal():
+    #    Platform.save_model(teachers[0].cpu().state_dict(), 'gs://tianjin-distgen/nolan/single_teacher_model.pt')
+    #    Platform.save_model(teacher.cpu().state_dict(), 'gs://tianjin-distgen/nolan/ensemble_teacher_model.pt')
 
     """
     ------------------------------------------------------------------------------------
@@ -155,8 +155,8 @@ def main(rank):
       xm.master_print("student epoch: ", epoch, " metrics: ", metrics)
       records.append(metrics)    
     xm.master_print('done')
-    if xm.is_master_ordinal():
-        Platform.save_model(student.cpu().state_dict(), 'gs://tianjin-distgen/nolan/student_model.pt')
+    #if xm.is_master_ordinal():
+    #    Platform.save_model(student.cpu().state_dict(), 'gs://tianjin-distgen/nolan/student_model.pt')
     xm.rendezvous("finalize")
 
 if __name__ == "__main__":
