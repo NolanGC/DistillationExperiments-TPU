@@ -63,9 +63,19 @@ def set_seed(args):
 def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id,predict_callback):
     """ Train the model """
 
-    args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
-    train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
-    train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size)
+    train_sampler = torch.utils.data.distributed.DistributedSampler(
+        train_dataset,
+        num_replicas=xm.xrt_world_size(),
+        rank=xm.get_ordinal(),
+        shuffle=True,
+        seed=42)
+
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=args.per_gpu_train_batch_size,
+        sampler=train_sampler,
+        num_workers=8,
+        drop_last=False)
 
     if args.max_steps > 0:
         t_total = args.max_steps
@@ -82,22 +92,6 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id,pred
     ]
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=t_total)
-    if args.fp16:
-        try:
-            from apex import amp
-        except ImportError:
-            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
-        model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16_opt_level)
-
-    # multi-gpu training (should be after apex fp16 initialization)
-    if args.n_gpu > 1:
-        model = torch.nn.DataParallel(model)
-
-    # Distributed training (should be after apex fp16 initialization)
-    if args.local_rank != -1:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
-                                                          output_device=args.local_rank,
-                                                          find_unused_parameters=True)
 
     # Train!
     logger.info("***** Running training *****")
@@ -141,32 +135,32 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id,pred
                 loss.backward()
 
             tr_loss += loss.item()
+            xm.master_print("step:{} loss:{}".format(step, loss.item()))
+
             if (step + 1) % args.gradient_accumulation_steps == 0:
-                if args.fp16:
-                    torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
-                else:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
 
                 scheduler.step()  # Update learning rate schedule
                 optimizer.step()
                 model.zero_grad()
+                xm.mark_step()
                 global_step += 1
 
-                if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                    # Log metrics
-                    if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
-                        results, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="dev")
-                    logging_loss = tr_loss
+                # if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
+                #     # Log metrics
+                #     if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
+                #         results, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="dev")
+                #     logging_loss = tr_loss
 
-                if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
-                    # Save model checkpoint
-                    output_dir = os.path.join(args.output_dir, "checkpoint-{}".format(global_step))
-                    if not os.path.exists(output_dir):
-                        os.makedirs(output_dir)
-                    model_to_save = model.module if hasattr(model, "module") else model  # Take care of distributed/parallel training
-                    model_to_save.save_pretrained(output_dir)
-                    torch.save(args, os.path.join(output_dir, "training_args.bin"))
-                    logger.info("Saving model checkpoint to %s", output_dir)
+                # if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
+                #     # Save model checkpoint
+                #     output_dir = os.path.join(args.output_dir, "checkpoint-{}".format(global_step))
+                #     if not os.path.exists(output_dir):
+                #         os.makedirs(output_dir)
+                #     model_to_save = model.module if hasattr(model, "module") else model  # Take care of distributed/parallel training
+                #     model_to_save.save_pretrained(output_dir)
+                #     torch.save(args, os.path.join(output_dir, "training_args.bin"))
+                #     logger.info("Saving model checkpoint to %s", output_dir)
 
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
@@ -336,7 +330,6 @@ def _mp_fn(index, args):
 
     model.to(args.device)
 
-    exit(0)
     logger.info("Training/evaluation parameters %s", args)
     def predict_callback(model,step):
         labels = get_labels(args.labels)
@@ -347,6 +340,7 @@ def _mp_fn(index, args):
             tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
             evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test")
         model.train()
+
     # Training
     if args.do_train:
         train_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode="train")

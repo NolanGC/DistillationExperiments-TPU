@@ -3,10 +3,10 @@ export BATCH_SIZE=32
 export NUM_EPOCHS=3
 export SAVE_STEPS=750
 export SEED=42
-MAX_LENGTH=128
-export BERT_MODEL=/path/to/bert/model
+export MAX_LENGTH=128
+export BERT_MODEL=bert-base-cased
 python3 cornell-train.py \
---data_dir data \
+--data_dir conll2003 \
 --model_type bert \
 --model_name_or_path $BERT_MODEL \
 --output_dir $OUTPUT_DIR \
