@@ -132,13 +132,13 @@ def _mp_fn(index):
         num_workers=4,
         drop_last=False)
 
-    bert_config_T3 = BertConfig.from_json_file('./bert_config_L3.json')
+    bert_config_T3 = BertConfig.from_json_file('./configs/bert_config_L3.json')
     bert_config_T3.output_hidden_states = True
 
     student_model = BertForSequenceClassification(bert_config_T3) #, num_labels = 2
     student_model.to(device=device)
 
-    bert_config = BertConfig.from_json_file('./bert_config.json')
+    bert_config = BertConfig.from_json_file('./configs/bert_config.json')
     bert_config.output_hidden_states = True
     teacher_model = BertForSequenceClassification(bert_config) #, num_labels = 2
     teacher_model.load_state_dict(Platform.load_model('gs://tianjin-distgen/sst2_teacher_model.pt', map_location=torch.device('cpu')))
