@@ -73,6 +73,7 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     kl = torch.tensor(0.).to(device)
     ece_stats = None
     if(isDistillation):
+        print("isDistillation True")
         para_loader = loader
     else:
         para_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device)
@@ -83,6 +84,7 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
             inputs, targets = batch[:2]
             loss_args = [inputs, targets]
             if teacher is not None:
+                teacher.to(device)
                 teacher_logits = teacher(inputs)
                 teacher_logits = reduce_ensemble_logits(teacher_logits)
                 loss_args.append(teacher_logits)
@@ -133,7 +135,7 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     return metrics
 
 def distillation_epoch(student, train_loader, optimizer, lr_scheduler, device, epoch,
-                       loss_fn):
+                       loss_fn, dataset=None, drop_last=True, sampler=None, num_workers =None):
     student.train()
     train_loss = torch.tensor(0.).to(device)
     correct = torch.tensor(0.).to(device)
@@ -143,6 +145,7 @@ def distillation_epoch(student, train_loader, optimizer, lr_scheduler, device, e
     kl = torch.tensor(0.).to(device)
     ece_stats = None
     num_batches = len(train_loader)
+    train_loader.loader = train_loader._make_loader(dataset, drop_last, sampler, num_workers)
     for batch_idx, (inputs, targets, teacher_logits, temp) in enumerate(train_loader):
         xm.master_print(f"distill {batch_idx}/{len(train_loader)}")
         optimizer.zero_grad()

@@ -1,4 +1,3 @@
-
 """
     PreResNet model definition
     ported from https://github.com/bearpaw/pytorch-classification/blob/master/models/cifar/preresnet.py
@@ -7,16 +6,26 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch_xla.core.xla_model as xm
 import math
 
 class ClassifierEnsemble(torch.nn.Module):
     def __init__(self, *models):
         super().__init__()
         self.components = torch.nn.ModuleList(models)
+        self.device = xm.xla_device() 
 
     def forward(self, inputs):
         """[batch_size x num_components x ...]"""
-        return torch.stack([model(inputs) for model in self.components], dim=1)
+        
+        inputs.to(self.device)
+        stacked_output = []
+        for model in self.components:
+            model.to(self.device)
+            inputs.to(self.device)
+            print(model.device, inputs.device, "model/input device")
+            stacked_output.append(model(inputs))
+        return torch.stack(stacked_output, dim=1)
 
 # for cifar100
 class PreResnet(nn.Module):

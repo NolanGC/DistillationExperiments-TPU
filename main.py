@@ -25,7 +25,6 @@ from dataloaders import DistillLoader, PermutedDistillLoader
 from data import get_dataset
 from lossfns import ClassifierTeacherLoss, ClassifierEnsembleLoss, TeacherStudentFwdCrossEntLoss, ClassifierStudentLoss
 from training import eval_epoch, supervised_epoch, distillation_epoch
-from gcp_utils import save_to_gcp
 from fileutil import Platform
 # ---------------------------------------------------------------------------- #
 #                                   CLI args                                   #
@@ -47,12 +46,12 @@ FLAGS['learning_rate'] = 5e-2
 FLAGS['momentum'] = 0.9
 FLAGS['weight_decay'] = 1e-4
 FLAGS['nestrov'] = True
-FLAGS['teacher_epochs'] = 1
-FLAGS['student_epochs'] = 1
-FLAGS['ensemble_size'] = 1
+FLAGS['teacher_epochs'] = 200
+FLAGS['student_epochs'] = 300
+FLAGS['ensemble_size'] = 3
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
-FLAGS['permuted'] = True
+FLAGS['permuted'] = False
 def main(rank):
     SERIAL_EXEC = xmp.MpSerialExecutor()
 
@@ -83,6 +82,7 @@ def main(rank):
     learning_rate = FLAGS['learning_rate'] * xm.xrt_world_size()
     device = xm.xla_device()
     teachers = [PreResnet(depth=56).to(device) for i in range(FLAGS['ensemble_size'])]
+    
     for teacher_index in range(FLAGS['ensemble_size']):
         xm.master_print(f"training teacher {teacher_index}")
         model = teachers[teacher_index]
@@ -105,10 +105,11 @@ def main(rank):
             xm.master_print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
         teachers.append(model)
         xm.rendezvous("finalize")
+    
     teacher = ClassifierEnsemble(*teachers)
     if xm.is_master_ordinal():
-        Platform.save_model(teachers[0].cpu().state_dict(), 'gs://tianjin-distgen/nolan/single_teacher_model.pt')
-        Platform.save_model(teacher.cpu().state_dict(), 'gs://tianjin-distgen/nolan/ensemble_teacher_model.pt')
+        Platform.save_model(teachers[0].cpu().state_dict(), 'gs://tianjin-distgen/nolan/NON-PERMUTE_single_teacher_model.pt')
+        Platform.save_model(teacher.cpu().state_dict(), 'gs://tianjin-distgen/nolan/NON_PERMUTE_ensemble_teacher_model.pt')
 
     """
     ------------------------------------------------------------------------------------
@@ -124,22 +125,24 @@ def main(rank):
         distill_loader = PermutedDistillLoader(temp=4.0, batch_size=FLAGS['batch_size'], shuffle=True, drop_last=True, device=device, sampler=distill_sampler, num_workers=FLAGS['num_workers'], teacher=teacher, dataset=train_dataset)
     else:
         distill_loader = DistillLoader(temp=4.0, batch_size=FLAGS['batch_size'], shuffle=True, drop_last=True, device = device, sampler=distill_sampler, num_workers=FLAGS['num_workers'], teacher=teacher, dataset=train_dataset)
-    teacher_train_metrics = eval_epoch(teacher, distill_loader, device=device, epoch=0,
-                                               loss_fn=ClassifierEnsembleLoss(teacher, device), isDistillation=True)
-    teacher_test_metrics = eval_epoch(teacher, loader, device=device, epoch=0,
-                                              loss_fn=ClassifierEnsembleLoss(teacher, device))
+    print(list(teacher.state_dict().values())[0].device)
+    #teacher_train_metrics = eval_epoch(teacher, distill_loader, device=device, epoch=0,
+                                               #loss_fn=ClassifierEnsembleLoss(teacher, device), isDistillation=True)
+    #teacher_test_metrics = eval_epoch(teacher, test_loader, device=device, epoch=0,
+                                              #loss_fn=ClassifierEnsembleLoss(teacher, device))
     """
     ------------------------------------------------------------------------------------
     Distilling Student Model
     ------------------------------------------------------------------------------------
     """
+    print('distilliing')
     student = PreResnet(deptch=56).to(device)
     student_base_loss = TeacherStudentFwdCrossEntLoss()
-    student_loss = ClassifierStudentLoss(student, student_base_loss, 0.0) # alpha is set to zero
+    student_loss = ClassifierStudentLoss(student, student_base_loss, alpha=0.0, device=device) # alpha is set to zero
     optimizer = torch.optim.SGD(params= student.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
     records = []
-    eval_metrics = eval_epoch(student, test_loader, epoch=0, loss_fn=student_loss, teacher=teacher)
+    eval_metrics = eval_epoch(student, test_loader, device=device, epoch=0, loss_fn=student_loss, teacher=teacher)
     records.append(eval_metrics)
     for epoch in range(FLAGS['student_epochs']):
       metrics = {}
@@ -153,7 +156,7 @@ def main(rank):
       records.append(metrics)    
     xm.master_print('done')
     if xm.is_master_ordinal():
-        Platform.save_model(student.cpu().state_dict(), 'gs://tianjin-distgen/nolan/student_model.pt')
+        Platform.save_model(student.cpu().state_dict(), 'gs://tianjin-distgen/nolan/NON_PERMUTE_student_model.pt')
     xm.rendezvous("finalize")
 
 if __name__ == "__main__":
