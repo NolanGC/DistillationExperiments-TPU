@@ -109,9 +109,6 @@ class TPUGeneralDistiller(GeneralDistiller):
                 dataloader, [device]).per_device_loader(device)
 
             for step, batch in enumerate(parallel_loader):
-                xm.master_print("epoch:{} step:{}/{}", current_epoch,
-                    step, len(parallel_loader))
-
                 if self.d_config.is_caching_logits is False and batch_postprocessor is not None:
                         batch = batch_postprocessor(batch)
 
@@ -125,9 +122,9 @@ class TPUGeneralDistiller(GeneralDistiller):
                 else:
                     total_loss.backward()
 
-                # if xm.is_master_ordinal() and step % 10 == 0:
-                    # print("epoch:{} step:{}/{} loss:{}".format(current_epoch, step,
-                        # len(parallel_loader), total_loss.item()))
+                if xm.is_master_ordinal() and step % 10 == 0:
+                    print("epoch:{} step:{}/{} loss:{}".format(current_epoch, step,
+                        len(parallel_loader), total_loss.item()))
 
                 if (step+1)%self.t_config.gradient_accumulation_steps == 0:
                     if max_grad_norm > 0:
@@ -154,6 +151,98 @@ class TPUGeneralDistiller(GeneralDistiller):
                             and ((current_epoch+1)%self.t_config.ckpt_epoch_frequency==0 or current_epoch+1==num_epochs):
                         self.save_and_callback(global_step, step, current_epoch, callback)
 
+    def compute_loss(self,results_S,results_T):
+
+        losses_dict = dict()
+
+        total_loss  = 0
+        if 'logits' in results_T and 'logits' in results_S:
+            logits_list_T = results_T['logits']  # list of tensor
+            logits_list_S = results_S['logits']  # list of tensor
+            total_kd_loss = 0
+            # if 'logits_mask' in results_S:
+            #     masks_list_S = results_S['logits_mask']
+            #     logits_list_S = select_logits_with_mask(logits_list_S,masks_list_S)  #(mask_sum, num_of_class)
+            # if 'logits_mask' in results_T:
+            #     masks_list_T = results_T['logits_mask']
+            #     logits_list_T = select_logits_with_mask(logits_list_T,masks_list_T)  #(mask_sum, num_of_class)
+
+            if self.d_config.probability_shift is True:
+                labels_list = results_S['labels']
+                for l_T, l_S, labels in zip(logits_list_T, logits_list_S, labels_list):
+                    print("should not hit")
+                    l_T = probability_shift_(l_T, labels)
+                    if self.d_config.temperature_scheduler is not None:
+                        temperature = self.d_config.temperature_scheduler(l_S, l_T, self.d_config.temperature)
+                    else:
+                        temperature = self.d_config.temperature
+                    total_kd_loss += self.kd_loss(l_S, l_T, temperature)
+            else:
+                for l_T,l_S in zip(logits_list_T,logits_list_S):
+                    if "logits_mask" in results_S:
+                        mask = results_S['logits_mask']
+                    else:
+                        mask = None
+                    if self.d_config.temperature_scheduler is not None:
+                        temperature = self.d_config.temperature_scheduler(l_S, l_T, self.d_config.temperature)
+                    else:
+                        temperature = self.d_config.temperature
+                    total_kd_loss += self.kd_loss(l_S, l_T, temperature, mask)
+            total_loss += total_kd_loss * self.d_config.kd_loss_weight
+            losses_dict['unweighted_kd_loss'] = total_kd_loss
+
+        FEATURES = ['hidden','attention']
+        inters_T = {feature: results_T.get(feature,[]) for feature in FEATURES}
+        inters_S = {feature: results_S.get(feature,[]) for feature in FEATURES}
+        inputs_mask_T = results_T.get('inputs_mask',None)
+        inputs_mask_S = results_S.get('inputs_mask',None)
+        for ith,inter_match in enumerate(self.d_config.intermediate_matches):
+            layer_T = inter_match.layer_T
+            layer_S = inter_match.layer_S
+            feature = inter_match.feature
+            loss_type = inter_match.loss
+            match_weight = inter_match.weight
+            match_loss = MATCH_LOSS_MAP[loss_type]
+
+            if type(layer_S) is list and type(layer_T) is list:
+                inter_S = [inters_S[feature][s] for s in layer_S]
+                inter_T = [inters_T[feature][t] for t in layer_T]
+                name_S = '-'.join(map(str,layer_S))
+                name_T = '-'.join(map(str,layer_T))
+                if self.projs[ith]:
+                    #inter_T = [self.projs[ith](t) for t in inter_T]
+                    inter_S = [self.projs[ith](s) for s in inter_S]
+            else:
+                inter_S = inters_S[feature][layer_S]
+                inter_T = inters_T[feature][layer_T]
+                name_S = str(layer_S)
+                name_T = str(layer_T)
+                if self.projs[ith]:
+                    #inter_T = self.projs[ith](inter_T)
+                    inter_S = self.projs[ith](inter_S)
+            intermediate_loss = match_loss(inter_S, inter_T, mask=inputs_mask_S)
+            total_loss += intermediate_loss * match_weight
+            losses_dict[f'unweighted_{feature}_{loss_type}_{name_S}_{name_T}'] = intermediate_loss
+
+        if self.has_custom_matches:
+            for hook_T, hook_S, match_weight, match_loss, proj_func  in \
+                    zip(self.custom_matches_cache['hook_outputs_T'], self.custom_matches_cache['hook_outputs_S'],
+                        self.custom_matches_cache['match_weghts'], self.custom_matches_cache['match_losses'],
+                        self.custom_matches_cache['match_proj_funcs']):
+                if proj_func is not None:
+                    hook_S = proj_func(hook_S)
+                total_loss += match_weight * match_loss(hook_S,hook_T,inputs_mask_S,inputs_mask_T)
+            self.custom_matches_cache['hook_outputs_T'] = []
+            self.custom_matches_cache['hook_outputs_S'] = []
+
+        if 'losses' in results_S:
+            total_hl_loss = 0
+            for loss in results_S['losses']:
+                # in case of multi-GPU
+                total_hl_loss += loss.mean()
+            total_loss += total_hl_loss * self.d_config.hard_label_weight
+            losses_dict['unweighted_hard_label_loss'] = total_hl_loss
+        return total_loss, losses_dict
 
 def set_seed(args):
     random.seed(args.seed)
@@ -224,26 +313,41 @@ def train(args, train_dataset,model_T, model, tokenizer, labels, pad_token_label
 
 def evaluate(args, model, tokenizer, labels, pad_token_label_id, mode, prefix=""):
     eval_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode=mode)
+    device = xm.xla_device()
 
-    args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
-    # Note that DistributedSampler samples randomly
-    eval_sampler = SequentialSampler(eval_dataset) if args.local_rank == -1 else DistributedSampler(eval_dataset)
-    eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
+    eval_sampler = torch.utils.data.distributed.DistributedSampler(
+        eval_dataset,
+        num_replicas=xm.xrt_world_size(),
+        rank=xm.get_ordinal(),
+        shuffle=True,
+        seed=42)
+
+    eval_dataloader = torch.utils.data.DataLoader(
+        eval_dataset,
+        batch_size=args.per_gpu_train_batch_size,
+        sampler=eval_sampler,
+        num_workers=8,
+        drop_last=False)
+    eval_dataloader = pl.ParallelLoader(
+        eval_dataloader, [device]).per_device_loader(device)
+
+    # args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
+    # # Note that DistributedSampler samples randomly
+    # eval_sampler = SequentialSampler(eval_dataset) if args.local_rank == -1 else DistributedSampler(eval_dataset)
+    # eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
     # multi-gpu evaluate
-    if args.n_gpu > 1:
-        model = torch.nn.DataParallel(model)
 
     # Eval!
     logger.info("***** Running evaluation %s *****", prefix)
     logger.info("  Num examples = %d", len(eval_dataset))
-    logger.info("  Batch size = %d", args.eval_batch_size)
+    logger.info("  Batch size = %d", args.per_gpu_train_batch_size)
     eval_loss = 0.0
     nb_eval_steps = 0
     preds = None
     out_label_ids = None
     model.eval()
-    for batch in tqdm(eval_dataloader, desc="Evaluating"):
+    for batch in tqdm(eval_dataloader, desc="Evaluating", disable=True):
         batch = tuple(t.to(args.device) for t in batch)
 
         with torch.no_grad():
@@ -437,7 +541,7 @@ def _mp_fn(index, args):
 
     # Evaluation
     results = {}
-    if args.do_eval and args.local_rank in [-1, 0]:
+    if args.do_eval:
         tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
         checkpoints = [args.output_dir]
         if args.eval_all_checkpoints:
