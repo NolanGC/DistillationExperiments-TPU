@@ -74,13 +74,13 @@ FLAGS['learning_rate'] = 5e-2
 FLAGS['momentum'] = 0.9
 FLAGS['weight_decay'] = 1e-4
 FLAGS['nestrov'] = True
-FLAGS['teacher_epochs'] = 200
-FLAGS['student_epochs'] = 300
-FLAGS['ensemble_size'] = 3
+FLAGS['teacher_epochs'] = 1
+FLAGS['student_epochs'] = 1 
+FLAGS['ensemble_size'] = 1
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
 FLAGS['permuted'] = False
-def main(rank):
+def main(rank, current_checkpoint):
     SERIAL_EXEC = xmp.MpSerialExecutor()
 
     train_dataset, test_dataset = SERIAL_EXEC.run(get_dataset)
@@ -110,35 +110,32 @@ def main(rank):
     learning_rate = FLAGS['learning_rate'] * xm.xrt_world_size()
     device = xm.xla_device()
 
-    # load most recent checkpoint
-    current_checkpoint = load_object('checkpoint.pt')
-    stage = current_checkpoint['stage']
-    current_teacher_index = 0
-
+    stage = 'teacher0'
     teachers = [PreResnet(depth=56).to(device) for i in range(FLAGS['ensemble_size'])]
-    optimizers = [optim.SGD(teacher.parameters(), lr=learning_rate, momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov']) for teacher in teachers]
-    if(stage == 'teacher0'):
-        current_teacher_index = 0
-        teachers[0].load_state_dict(current_checkpoint['teachers'][0])
-        optimizers[0].load_state_dict(current_checkpoint['optimizer'])
-    elif(stage == 'teacher1'):
-        current_teacher_index = 1
-        teachers[0].load_state_dict(current_checkpoint['teachers'][0])
-        teachers[1].load_state_dict(current_checkpoint['teachers'][1])
-        optimizers[1].load_state_dict(current_checkpoint['optimizer'])
-    elif(stage == 'teacher2'):
-        current_teacher_index = 2
-        teachers[0].load_state_dict(current_checkpoint['teachers'][0])
-        teachers[1].load_state_dict(current_checkpoint['teachers'][1])
-        teachers[2].load_state_dict(current_checkpoint['teachers'][2])
-        optimizers[2].load_state_dict(current_checkpoint['optimizer'])
+    current_teacher_index = 0
+    if(current_checkpoint):
+        stage = current_checkpoint['stage']
+
+        if(stage == 'teacher0'):
+            current_teacher_index = 0
+            teachers[0].load_state_dict(current_checkpoint['teachers'][0])
+        elif(stage == 'teacher1'):
+            current_teacher_index = 1
+            teachers[0].load_state_dict(current_checkpoint['teachers'][0])
+            teachers[1].load_state_dict(current_checkpoint['teachers'][1])
+        elif(stage == 'teacher2'):
+            current_teacher_index = 2
+            teachers[0].load_state_dict(current_checkpoint['teachers'][0])
+            teachers[1].load_state_dict(current_checkpoint['teachers'][1])
+            teachers[2].load_state_dict(current_checkpoint['teachers'][2])
     
     if(not stage == 'student'):
         for teacher_index in range(current_teacher_index, FLAGS['ensemble_size']):
             xm.master_print(f"training teacher {teacher_index}")
             model = teachers[teacher_index]
-            optimizer = optimizers[teacher_index]
-            lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
+            optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov'])
+            if(current_checkpoint):
+                optimizer.load_state_dict(current_checkpoint['optimizer'])
             teacher_loss_fn = ClassifierTeacherLoss(model, device)
             records = []
             eval_metrics = eval_epoch(model, test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
@@ -146,21 +143,24 @@ def main(rank):
             xm.master_print(f"initial eval metrics:", eval_metrics)
             xm.master_print('<-- training begin -->')
             start_epoch = 0
-            if(stage[-1] == str(teacher_index)):
+            if(current_checkpoint and stage[-1] == str(teacher_index)):
                 start_epoch = current_checkpoint['epoch']
+            lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
             for epoch in range(start_epoch, FLAGS['teacher_epochs']):
                 metrics = {}
                 train_metrics = supervised_epoch(model, train_loader, optimizer, lr_scheduler, device=device, epoch=epoch+1, loss_fn = teacher_loss_fn)
+                print('done with metrics')
                 metrics.update(train_metrics)
                 if(epoch % FLAGS['evaluation_frequency'] == 0):
                     #saving checkpoint
-                    save_checkpoint(
-                        stage=f'teacher{teacher_index}',
-                        teachers=teachers,
-                        student=None,
-                        epoch=epoch,
-                        optimizer=optimizer
-                    )
+                    if xm.is_master_ordinal():
+                        save_checkpoint(
+                            stage=f'teacher{teacher_index}',
+                            teachers=teachers,
+                            student=None,
+                            epoch=epoch,
+                            optimizer=optimizer
+                        )
                     eval_metrics = eval_epoch(model, test_loader, device=device, epoch=epoch+1, loss_fn=teacher_loss_fn)
                     metrics.update(eval_metrics)
                 records.append(metrics)
@@ -235,5 +235,11 @@ def main(rank):
     xm.rendezvous("finalize")
 
 if __name__ == "__main__":
-    xmp.spawn(main, args=(), nprocs=8, start_method='fork')
+    try:
+        current_checkpoint = load_object('checkpoint.pt')
+        print("LOADED CHECKPOINT", current_checkpoint)
+        print("CHECKPOINT LOADED")
+    except:
+        current_checkpoint = None
+    xmp.spawn(main, args=(current_checkpoint), nprocs=8, start_method='fork')
 

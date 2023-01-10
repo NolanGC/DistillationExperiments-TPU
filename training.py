@@ -29,9 +29,10 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn
     train_loss = torch.tensor(0.).to(device)
     correct = torch.tensor(0.).to(device)
     total = 0
+    print('STARTING SUPERVISION ON', device)
     para_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device)
     for batch_idx, (inputs, targets) in enumerate(para_loader):
-        xm.master_print(f"supervised {batch_idx}/{len(loader)}")
+        print(f"supervised {batch_idx}/{len(loader)}")
         optimizer.zero_grad()
         loss, outputs = loss_fn(inputs, targets)
         loss.backward()
