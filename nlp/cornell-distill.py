@@ -25,10 +25,12 @@ import os
 import random
 
 import numpy as np
+import torch_xla
 import torch
 import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
+import torch.nn.functional as F
 from seqeval.metrics import precision_score, recall_score, f1_score
 from torch.nn import CrossEntropyLoss
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset, Dataset
@@ -109,13 +111,11 @@ class TPUGeneralDistiller(GeneralDistiller):
                 dataloader, [device]).per_device_loader(device)
 
             for step, batch in enumerate(parallel_loader):
-                xm.master_print("epoch:{} step:{}/{}", current_epoch,
-                    step, len(parallel_loader))
-
                 if self.d_config.is_caching_logits is False and batch_postprocessor is not None:
                         batch = batch_postprocessor(batch)
 
                 total_loss, losses_dict = self.train_on_batch(batch,args)
+                # print(losses_dict)
                 # self.write_loss(total_loss, writer_step, losses_dict)
                 writer_step += 1
                 total_loss /= self.t_config.gradient_accumulation_steps
@@ -125,9 +125,9 @@ class TPUGeneralDistiller(GeneralDistiller):
                 else:
                     total_loss.backward()
 
-                # if xm.is_master_ordinal() and step % 10 == 0:
-                    # print("epoch:{} step:{}/{} loss:{}".format(current_epoch, step,
-                        # len(parallel_loader), total_loss.item()))
+                if xm.is_master_ordinal() and step % 10 == 0:
+                    print("epoch:{} step:{}/{} loss:{}".format(current_epoch, step,
+                        len(parallel_loader), total_loss.item()))
 
                 if (step+1)%self.t_config.gradient_accumulation_steps == 0:
                     if max_grad_norm > 0:
@@ -136,8 +136,7 @@ class TPUGeneralDistiller(GeneralDistiller):
                         else:
                             torch.nn.utils.clip_grad_norm_(self.model_S.parameters(), max_grad_norm)
                     optimizer.step()
-                    if scheduler is not None:
-                        scheduler.step()
+                    scheduler.step()
                     optimizer.zero_grad()
                     xm.mark_step()
 
@@ -150,10 +149,121 @@ class TPUGeneralDistiller(GeneralDistiller):
                             self.d_config.hard_label_weight_scheduler(global_step/total_global_steps)
 
 
-                    if (global_step%train_steps_per_epoch in checkpoints) \
-                            and ((current_epoch+1)%self.t_config.ckpt_epoch_frequency==0 or current_epoch+1==num_epochs):
-                        self.save_and_callback(global_step, step, current_epoch, callback)
+            if (current_epoch + 1) % 10 == 0:
+                self.save_and_callback(global_step, step, current_epoch, callback)
 
+    def compute_loss(self,results_S,results_T):
+
+        losses_dict = dict()
+
+        total_loss  = 0
+        if 'logits' in results_T and 'logits' in results_S:
+            logits_list_T = results_T['logits']  # list of tensor
+            logits_list_S = results_S['logits']  # list of tensor
+            total_kd_loss = 0
+            # if 'logits_mask' in results_S:
+            #     masks_list_S = results_S['logits_mask']
+            #     logits_list_S = select_logits_with_mask(logits_list_S,masks_list_S)  #(mask_sum, num_of_class)
+            # if 'logits_mask' in results_T:
+            #     masks_list_T = results_T['logits_mask']
+            #     logits_list_T = select_logits_with_mask(logits_list_T,masks_list_T)  #(mask_sum, num_of_class)
+
+            if self.d_config.probability_shift is True:
+                labels_list = results_S['labels']
+                for l_T, l_S, labels in zip(logits_list_T, logits_list_S, labels_list):
+                    print("should not hit")
+                    l_T = probability_shift_(l_T, labels)
+                    if self.d_config.temperature_scheduler is not None:
+                        temperature = self.d_config.temperature_scheduler(l_S, l_T, self.d_config.temperature)
+                    else:
+                        temperature = self.d_config.temperature
+                    total_kd_loss += self.kd_loss(l_S, l_T, temperature)
+            else:
+                for l_T,l_S in zip(logits_list_T,logits_list_S):
+                    if "logits_mask" in results_S:
+                        mask = results_S['logits_mask']
+                    else:
+                        mask = None
+                    if self.d_config.temperature_scheduler is not None:
+                        temperature = self.d_config.temperature_scheduler(l_S, l_T, self.d_config.temperature)
+                    else:
+                        temperature = self.d_config.temperature
+                    total_kd_loss += self.masked_kd_loss(l_S, l_T, temperature, mask)
+            total_loss += total_kd_loss * self.d_config.kd_loss_weight
+            losses_dict['unweighted_kd_loss'] = total_kd_loss
+
+        FEATURES = ['hidden','attention']
+        inters_T = {feature: results_T.get(feature,[]) for feature in FEATURES}
+        inters_S = {feature: results_S.get(feature,[]) for feature in FEATURES}
+        inputs_mask_T = results_T.get('inputs_mask',None)
+        inputs_mask_S = results_S.get('inputs_mask',None)
+        for ith,inter_match in enumerate(self.d_config.intermediate_matches):
+            layer_T = inter_match.layer_T
+            layer_S = inter_match.layer_S
+            feature = inter_match.feature
+            loss_type = inter_match.loss
+            match_weight = inter_match.weight
+            match_loss = MATCH_LOSS_MAP[loss_type]
+
+            if type(layer_S) is list and type(layer_T) is list:
+                inter_S = [inters_S[feature][s] for s in layer_S]
+                inter_T = [inters_T[feature][t] for t in layer_T]
+                name_S = '-'.join(map(str,layer_S))
+                name_T = '-'.join(map(str,layer_T))
+                if self.projs[ith]:
+                    #inter_T = [self.projs[ith](t) for t in inter_T]
+                    inter_S = [self.projs[ith](s) for s in inter_S]
+            else:
+                inter_S = inters_S[feature][layer_S]
+                inter_T = inters_T[feature][layer_T]
+                name_S = str(layer_S)
+                name_T = str(layer_T)
+                if self.projs[ith]:
+                    #inter_T = self.projs[ith](inter_T)
+                    inter_S = self.projs[ith](inter_S)
+            intermediate_loss = match_loss(inter_S, inter_T, mask=inputs_mask_S)
+            total_loss += intermediate_loss * match_weight
+            losses_dict[f'unweighted_{feature}_{loss_type}_{name_S}_{name_T}'] = intermediate_loss
+
+        if self.has_custom_matches:
+            for hook_T, hook_S, match_weight, match_loss, proj_func  in \
+                    zip(self.custom_matches_cache['hook_outputs_T'], self.custom_matches_cache['hook_outputs_S'],
+                        self.custom_matches_cache['match_weghts'], self.custom_matches_cache['match_losses'],
+                        self.custom_matches_cache['match_proj_funcs']):
+                if proj_func is not None:
+                    hook_S = proj_func(hook_S)
+                total_loss += match_weight * match_loss(hook_S,hook_T,inputs_mask_S,inputs_mask_T)
+            self.custom_matches_cache['hook_outputs_T'] = []
+            self.custom_matches_cache['hook_outputs_S'] = []
+
+        if 'losses' in results_S:
+            total_hl_loss = 0
+            for loss in results_S['losses']:
+                # in case of multi-GPU
+                total_hl_loss += loss.mean()
+            total_loss += total_hl_loss * self.d_config.hard_label_weight
+            losses_dict['unweighted_hard_label_loss'] = total_hl_loss
+        return total_loss, losses_dict
+
+    def masked_kd_loss(self, logits_S, logits_T, temperature=1, mask=None):
+        '''
+        Calculate the cross entropy between logits_S and logits_T
+
+        :param logits_S: Tensor of shape (batch_size, length, num_labels) or (batch_size, num_labels)
+        :param logits_T: Tensor of shape (batch_size, length, num_labels) or (batch_size, num_labels)
+        :param temperature: A float or a tensor of shape (batch_size, length) or (batch_size,)
+        '''
+        assert len(mask) == 1
+        mask = mask[0].unsqueeze(-1)
+
+        if isinstance(temperature, torch.Tensor) and temperature.dim() > 0:
+            temperature = temperature.unsqueeze(-1)
+        beta_logits_T = logits_T / temperature
+        beta_logits_S = logits_S / temperature
+        p_T = F.softmax(beta_logits_T, dim=-1)
+        loss = -(p_T * F.log_softmax(beta_logits_S, dim=-1) * mask).sum(dim=-1)
+        loss = loss.sum() / torch.sum(mask)
+        return loss
 
 def set_seed(args):
     random.seed(args.seed)
@@ -202,7 +312,7 @@ def train(args, train_dataset,model_T, model, tokenizer, labels, pad_token_label
     logger.info("  Total optimization steps = %d", t_total)
     if args.do_train and args.do_distill:
         distill_config = DistillationConfig(
-            temperature = 8,
+            temperature = .1,
               # intermediate_matches = [{'layer_T':10, 'layer_S':3, 'feature':'hidden','loss': 'hidden_mse', 'weight' : 1}]
             )
         train_config = TrainingConfig(device=args.device,
@@ -224,26 +334,41 @@ def train(args, train_dataset,model_T, model, tokenizer, labels, pad_token_label
 
 def evaluate(args, model, tokenizer, labels, pad_token_label_id, mode, prefix=""):
     eval_dataset = load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode=mode)
+    device = xm.xla_device()
 
-    args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
-    # Note that DistributedSampler samples randomly
-    eval_sampler = SequentialSampler(eval_dataset) if args.local_rank == -1 else DistributedSampler(eval_dataset)
-    eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
+    eval_sampler = torch.utils.data.distributed.DistributedSampler(
+        eval_dataset,
+        num_replicas=xm.xrt_world_size(),
+        rank=xm.get_ordinal(),
+        shuffle=True,
+        seed=42)
+
+    eval_dataloader = torch.utils.data.DataLoader(
+        eval_dataset,
+        batch_size=args.per_gpu_train_batch_size,
+        sampler=eval_sampler,
+        num_workers=8,
+        drop_last=False)
+    eval_dataloader = pl.ParallelLoader(
+        eval_dataloader, [device]).per_device_loader(device)
+
+    # args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
+    # # Note that DistributedSampler samples randomly
+    # eval_sampler = SequentialSampler(eval_dataset) if args.local_rank == -1 else DistributedSampler(eval_dataset)
+    # eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
     # multi-gpu evaluate
-    if args.n_gpu > 1:
-        model = torch.nn.DataParallel(model)
 
     # Eval!
     logger.info("***** Running evaluation %s *****", prefix)
     logger.info("  Num examples = %d", len(eval_dataset))
-    logger.info("  Batch size = %d", args.eval_batch_size)
+    logger.info("  Batch size = %d", args.per_gpu_train_batch_size)
     eval_loss = 0.0
     nb_eval_steps = 0
     preds = None
     out_label_ids = None
     model.eval()
-    for batch in tqdm(eval_dataloader, desc="Evaluating"):
+    for batch in tqdm(eval_dataloader, desc="Evaluating", disable=True):
         batch = tuple(t.to(args.device) for t in batch)
 
         with torch.no_grad():
@@ -254,9 +379,6 @@ def evaluate(args, model, tokenizer, labels, pad_token_label_id, mode, prefix=""
                 inputs["token_type_ids"] = batch[2] if args.model_type in ["bert", "xlnet"] else None  # XLM and RoBERTa don"t use segment_ids
             outputs = model(**inputs)
             tmp_eval_loss, logits = outputs[:2]
-
-            if args.n_gpu > 1:
-                tmp_eval_loss = tmp_eval_loss.mean()  # mean() to average on multi-gpu parallel evaluating
 
             eval_loss += tmp_eval_loss.item()
         nb_eval_steps += 1
@@ -401,15 +523,23 @@ def _mp_fn(index, args):
     model.to(args.device)
     model_T.to(args.device)
 
+    # Evaluating teacher
+    logger.info("Evaluating teacher...")
+    labels = get_labels(args.labels)
+    config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
+    # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
+    pad_token_label_id = CrossEntropyLoss().ignore_index
+    tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
+    evaluate(args, model_T, tokenizer, labels, pad_token_label_id, mode="test")
+
     logger.info("Training/evaluation parameters %s", args)
     def predict_callback(model,step):
         labels = get_labels(args.labels)
         config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
         # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
         pad_token_label_id = CrossEntropyLoss().ignore_index
-        if args.do_predict and args.local_rank in [-1, 0]:
-            tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
-            evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test")
+        tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
+        evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test")
         model.train()
 
     # Training
@@ -420,7 +550,7 @@ def _mp_fn(index, args):
         # logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
     # Saving best-practices: if you use defaults names for the model, you can reload it using from_pretrained()
-    if args.do_train and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
+    if args.do_train and xm.is_master_ordinal():
         # Create output directory if needed
         if not os.path.exists(args.output_dir) and args.local_rank in [-1, 0]:
             os.makedirs(args.output_dir)
@@ -429,15 +559,17 @@ def _mp_fn(index, args):
         # Save a trained model, configuration and tokenizer using `save_pretrained()`.
         # They can then be reloaded using `from_pretrained()`
         model_to_save = model.module if hasattr(model, "module") else model  # Take care of distributed/parallel training
-        model_to_save.save_pretrained(args.output_dir)
+        model_to_save.cpu().save_pretrained(args.output_dir)
         tokenizer.save_pretrained(args.output_dir)
 
         # Good practice: save your training arguments together with the trained model
         torch.save(args, os.path.join(args.output_dir, "training_args.bin"))
 
+    xm.rendezvous("save_model")
+
     # Evaluation
     results = {}
-    if args.do_eval and args.local_rank in [-1, 0]:
+    if args.do_eval:
         tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
         checkpoints = [args.output_dir]
         if args.eval_all_checkpoints:
@@ -448,7 +580,7 @@ def _mp_fn(index, args):
             global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
             model = model_class.from_pretrained(checkpoint)
             model.to(args.device)
-            result, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="dev", prefix=global_step)
+            result, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test", prefix=global_step)
             if global_step:
                 result = {"{}_{}".format(global_step, k): v for k, v in result.items()}
             results.update(result)
@@ -457,32 +589,32 @@ def _mp_fn(index, args):
             for key in sorted(results.keys()):
                 writer.write("{} = {}\n".format(key, str(results[key])))
 
-    if args.do_predict and args.local_rank in [-1, 0]:
-        tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
-        model = model_class.from_pretrained(args.output_dir)
-        model.to(args.device)
-        result, predictions = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test")
-        # Save results
-        output_test_results_file = os.path.join(args.output_dir, "test_results.txt")
-        with open(output_test_results_file, "w") as writer:
-            for key in sorted(result.keys()):
-                writer.write("{} = {}\n".format(key, str(result[key])))
-        # Save predictions
-        output_test_predictions_file = os.path.join(args.output_dir, "test_predictions.txt")
-        with open(output_test_predictions_file, "w") as writer:
-            with open(os.path.join(args.data_dir, "test.txt"), "r") as f:
-                example_id = 0
-                for line in f:
-                    if line.startswith("-DOCSTART-") or line == "" or line == "\n":
-                        writer.write(line)
-                        if not predictions[example_id]:
-                            example_id += 1
-                    elif predictions[example_id]:
-                        output_line = line.split()[0] + " " + predictions[example_id].pop(0) + "\n"
-                        writer.write(output_line)
-                    else:
-                        logger.warning("Maximum sequence length exceeded: No prediction for '%s'.", line.split()[0])
-
+    # if args.do_predict and args.local_rank in [-1, 0]:
+    #     tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
+    #     model = model_class.from_pretrained(args.output_dir)
+    #     model.to(args.device)
+    #     result, predictions = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test")
+    #     # Save results
+    #     output_test_results_file = os.path.join(args.output_dir, "test_results.txt")
+    #     with open(output_test_results_file, "w") as writer:
+    #         for key in sorted(result.keys()):
+    #             writer.write("{} = {}\n".format(key, str(result[key])))
+    #     # Save predictions
+    #     output_test_predictions_file = os.path.join(args.output_dir, "test_predictions.txt")
+    #     with open(output_test_predictions_file, "w") as writer:
+    #         with open(os.path.join(args.data_dir, "test.txt"), "r") as f:
+    #             example_id = 0
+    #             for line in f:
+    #                 if line.startswith("-DOCSTART-") or line == "" or line == "\n":
+    #                     writer.write(line)
+    #                     if not predictions[example_id]:
+    #                         example_id += 1
+    #                 elif predictions[example_id]:
+    #                     output_line = line.split()[0] + " " + predictions[example_id].pop(0) + "\n"
+    #                     writer.write(output_line)
+    #                 else:
+    #                     logger.warning("Maximum sequence length exceeded: No prediction for '%s'.", line.split()[0])
+    xm.rendezvous("finish")
     return results
 
 
