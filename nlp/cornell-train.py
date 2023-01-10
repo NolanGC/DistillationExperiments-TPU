@@ -35,6 +35,7 @@ from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, Tenso
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 from utils_ner import convert_examples_to_features, get_labels, read_examples_from_file
+from fileutil import Platform
 
 from transformers import AdamW, get_linear_schedule_with_warmup
 from transformers import WEIGHTS_NAME, BertConfig, BertForTokenClassification, BertTokenizer
@@ -108,7 +109,7 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id,pred
     train_iterator = trange(int(args.num_train_epochs), desc="Epoch", disable=True)
     device = xm.xla_device()
 
-    for _ in train_iterator:
+    for epoch in train_iterator:
         xm.master_print("new epoch")
         para_train_dataloader = pl.ParallelLoader(
             train_dataloader, [device]).per_device_loader(device)
@@ -128,7 +129,7 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id,pred
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
             loss.backward()
-            xm.master_print("step:{} loss:{}".format(step, loss))
+            xm.master_print("epoch:{} step:{} loss:{}".format(epoch, step, loss))
 
             tr_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
@@ -140,10 +141,9 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id,pred
                 xm.mark_step()
                 global_step += 1
 
-                if xm.is_master_ordinal() and args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                    # Log metrics
-                    if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
-                        results, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="dev")
+                # if args.logging_steps > 0 and global_step % args.logging_steps == 0:
+                #     if args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
+                #         results, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test")
 
                 # if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
                 #     # Save model checkpoint
@@ -158,8 +158,9 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id,pred
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
                 break
+        if epoch % 10 == 0:
+            predict_callback(model,global_step)
 
-        predict_callback(model,global_step)
         if args.max_steps > 0 and global_step > args.max_steps:
             train_iterator.close()
             break
@@ -354,7 +355,8 @@ def _mp_fn(index, args):
 
         model_to_save.cpu().save_pretrained(args.output_dir)
         tokenizer.save_pretrained(args.output_dir)
-        model_to_save.to(args.device)
+        Platform.copytree(args.output_dir, "gs://tianjin-distgen/tjin/" + args.output_dir)
+
         model_to_save.to(args.device)
 
         # Good practice: save your training arguments together with the trained model

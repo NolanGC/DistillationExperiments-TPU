@@ -1,11 +1,11 @@
-# export OUTPUT_DIR=outputs-model-base
+# export OUTPUT_DIR=conll-outputs-model-base
 # export BATCH_SIZE=32
-# export NUM_EPOCHS=1.0
+# export NUM_EPOCHS=60.
 # export SAVE_STEPS=750
 # export SEED=42
 # export MAX_LENGTH=128
 # export BERT_MODEL=bert-base-cased
-# python3 cornell-train.py \
+# python3 -u cornell-train.py \
 # --data_dir conll2003 \
 # --model_type bert \
 # --model_name_or_path $BERT_MODEL \
@@ -20,9 +20,9 @@
 # --do_eval \
 # --do_predict
 
-export OUTPUT_DIR=output-model-T3
+export OUTPUT_DIR=conll-output-model-T3
 export BATCH_SIZE=32
-export NUM_EPOCHS=2
+export NUM_EPOCHS=60
 export SAVE_STEPS=750
 export SEED=42
 export MAX_LENGTH=128
