@@ -25,10 +25,12 @@ import os
 import random
 
 import numpy as np
+import torch_xla
 import torch
 import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
+import torch.nn.functional as F
 from seqeval.metrics import precision_score, recall_score, f1_score
 from torch.nn import CrossEntropyLoss
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset, Dataset
@@ -113,6 +115,7 @@ class TPUGeneralDistiller(GeneralDistiller):
                         batch = batch_postprocessor(batch)
 
                 total_loss, losses_dict = self.train_on_batch(batch,args)
+                print(losses_dict)
                 # self.write_loss(total_loss, writer_step, losses_dict)
                 writer_step += 1
                 total_loss /= self.t_config.gradient_accumulation_steps
@@ -187,7 +190,7 @@ class TPUGeneralDistiller(GeneralDistiller):
                         temperature = self.d_config.temperature_scheduler(l_S, l_T, self.d_config.temperature)
                     else:
                         temperature = self.d_config.temperature
-                    total_kd_loss += self.kd_loss(l_S, l_T, temperature, mask)
+                    total_kd_loss += self.masked_kd_loss(l_S, l_T, temperature, mask)
             total_loss += total_kd_loss * self.d_config.kd_loss_weight
             losses_dict['unweighted_kd_loss'] = total_kd_loss
 
@@ -243,6 +246,26 @@ class TPUGeneralDistiller(GeneralDistiller):
             total_loss += total_hl_loss * self.d_config.hard_label_weight
             losses_dict['unweighted_hard_label_loss'] = total_hl_loss
         return total_loss, losses_dict
+
+    def masked_kd_loss(self, logits_S, logits_T, temperature=1, mask=None):
+        '''
+        Calculate the cross entropy between logits_S and logits_T
+
+        :param logits_S: Tensor of shape (batch_size, length, num_labels) or (batch_size, num_labels)
+        :param logits_T: Tensor of shape (batch_size, length, num_labels) or (batch_size, num_labels)
+        :param temperature: A float or a tensor of shape (batch_size, length) or (batch_size,)
+        '''
+        assert len(mask) == 1
+        mask = mask[0].unsqueeze(-1)
+
+        if isinstance(temperature, torch.Tensor) and temperature.dim() > 0:
+            temperature = temperature.unsqueeze(-1)
+        beta_logits_T = logits_T / temperature
+        beta_logits_S = logits_S / temperature
+        p_T = F.softmax(beta_logits_T, dim=-1)
+        loss = -(p_T * F.log_softmax(beta_logits_S, dim=-1) * mask).sum(dim=-1)
+        loss = loss.sum() / torch.sum(mask)
+        return loss
 
 def set_seed(args):
     random.seed(args.seed)
