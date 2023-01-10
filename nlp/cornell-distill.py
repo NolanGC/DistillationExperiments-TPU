@@ -521,7 +521,7 @@ def _mp_fn(index, args):
         # logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
     # Saving best-practices: if you use defaults names for the model, you can reload it using from_pretrained()
-    if args.do_train and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
+    if args.do_train and xm.is_master_ordinal():
         # Create output directory if needed
         if not os.path.exists(args.output_dir) and args.local_rank in [-1, 0]:
             os.makedirs(args.output_dir)
@@ -530,11 +530,13 @@ def _mp_fn(index, args):
         # Save a trained model, configuration and tokenizer using `save_pretrained()`.
         # They can then be reloaded using `from_pretrained()`
         model_to_save = model.module if hasattr(model, "module") else model  # Take care of distributed/parallel training
-        model_to_save.save_pretrained(args.output_dir)
+        model_to_save.cpu().save_pretrained(args.output_dir)
         tokenizer.save_pretrained(args.output_dir)
 
         # Good practice: save your training arguments together with the trained model
         torch.save(args, os.path.join(args.output_dir, "training_args.bin"))
+
+    xm.rendezvous("save_model")
 
     # Evaluation
     results = {}
@@ -549,7 +551,7 @@ def _mp_fn(index, args):
             global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
             model = model_class.from_pretrained(checkpoint)
             model.to(args.device)
-            result, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="dev", prefix=global_step)
+            result, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test", prefix=global_step)
             if global_step:
                 result = {"{}_{}".format(global_step, k): v for k, v in result.items()}
             results.update(result)
@@ -558,32 +560,32 @@ def _mp_fn(index, args):
             for key in sorted(results.keys()):
                 writer.write("{} = {}\n".format(key, str(results[key])))
 
-    if args.do_predict and args.local_rank in [-1, 0]:
-        tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
-        model = model_class.from_pretrained(args.output_dir)
-        model.to(args.device)
-        result, predictions = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test")
-        # Save results
-        output_test_results_file = os.path.join(args.output_dir, "test_results.txt")
-        with open(output_test_results_file, "w") as writer:
-            for key in sorted(result.keys()):
-                writer.write("{} = {}\n".format(key, str(result[key])))
-        # Save predictions
-        output_test_predictions_file = os.path.join(args.output_dir, "test_predictions.txt")
-        with open(output_test_predictions_file, "w") as writer:
-            with open(os.path.join(args.data_dir, "test.txt"), "r") as f:
-                example_id = 0
-                for line in f:
-                    if line.startswith("-DOCSTART-") or line == "" or line == "\n":
-                        writer.write(line)
-                        if not predictions[example_id]:
-                            example_id += 1
-                    elif predictions[example_id]:
-                        output_line = line.split()[0] + " " + predictions[example_id].pop(0) + "\n"
-                        writer.write(output_line)
-                    else:
-                        logger.warning("Maximum sequence length exceeded: No prediction for '%s'.", line.split()[0])
-
+    # if args.do_predict and args.local_rank in [-1, 0]:
+    #     tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
+    #     model = model_class.from_pretrained(args.output_dir)
+    #     model.to(args.device)
+    #     result, predictions = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test")
+    #     # Save results
+    #     output_test_results_file = os.path.join(args.output_dir, "test_results.txt")
+    #     with open(output_test_results_file, "w") as writer:
+    #         for key in sorted(result.keys()):
+    #             writer.write("{} = {}\n".format(key, str(result[key])))
+    #     # Save predictions
+    #     output_test_predictions_file = os.path.join(args.output_dir, "test_predictions.txt")
+    #     with open(output_test_predictions_file, "w") as writer:
+    #         with open(os.path.join(args.data_dir, "test.txt"), "r") as f:
+    #             example_id = 0
+    #             for line in f:
+    #                 if line.startswith("-DOCSTART-") or line == "" or line == "\n":
+    #                     writer.write(line)
+    #                     if not predictions[example_id]:
+    #                         example_id += 1
+    #                 elif predictions[example_id]:
+    #                     output_line = line.split()[0] + " " + predictions[example_id].pop(0) + "\n"
+    #                     writer.write(output_line)
+    #                 else:
+    #                     logger.warning("Maximum sequence length exceeded: No prediction for '%s'.", line.split()[0])
+    xm.rendezvous("finish")
     return results
 
 
