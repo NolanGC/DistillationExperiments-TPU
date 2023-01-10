@@ -115,7 +115,7 @@ class TPUGeneralDistiller(GeneralDistiller):
                         batch = batch_postprocessor(batch)
 
                 total_loss, losses_dict = self.train_on_batch(batch,args)
-                print(losses_dict)
+                # print(losses_dict)
                 # self.write_loss(total_loss, writer_step, losses_dict)
                 writer_step += 1
                 total_loss /= self.t_config.gradient_accumulation_steps
@@ -136,8 +136,7 @@ class TPUGeneralDistiller(GeneralDistiller):
                         else:
                             torch.nn.utils.clip_grad_norm_(self.model_S.parameters(), max_grad_norm)
                     optimizer.step()
-                    if scheduler is not None:
-                        scheduler.step()
+                    scheduler.step()
                     optimizer.zero_grad()
                     xm.mark_step()
 
@@ -150,9 +149,8 @@ class TPUGeneralDistiller(GeneralDistiller):
                             self.d_config.hard_label_weight_scheduler(global_step/total_global_steps)
 
 
-                    if (global_step%train_steps_per_epoch in checkpoints) \
-                            and ((current_epoch+1)%self.t_config.ckpt_epoch_frequency==0 or current_epoch+1==num_epochs):
-                        self.save_and_callback(global_step, step, current_epoch, callback)
+            if (current_epoch + 1) % 10 == 0:
+                self.save_and_callback(global_step, step, current_epoch, callback)
 
     def compute_loss(self,results_S,results_T):
 
@@ -314,7 +312,7 @@ def train(args, train_dataset,model_T, model, tokenizer, labels, pad_token_label
     logger.info("  Total optimization steps = %d", t_total)
     if args.do_train and args.do_distill:
         distill_config = DistillationConfig(
-            temperature = 8,
+            temperature = .1,
               # intermediate_matches = [{'layer_T':10, 'layer_S':3, 'feature':'hidden','loss': 'hidden_mse', 'weight' : 1}]
             )
         train_config = TrainingConfig(device=args.device,
@@ -525,15 +523,23 @@ def _mp_fn(index, args):
     model.to(args.device)
     model_T.to(args.device)
 
+    # Evaluating teacher
+    logger.info("Evaluating teacher...")
+    labels = get_labels(args.labels)
+    config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
+    # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
+    pad_token_label_id = CrossEntropyLoss().ignore_index
+    tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
+    evaluate(args, model_T, tokenizer, labels, pad_token_label_id, mode="test")
+
     logger.info("Training/evaluation parameters %s", args)
     def predict_callback(model,step):
         labels = get_labels(args.labels)
         config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
         # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
         pad_token_label_id = CrossEntropyLoss().ignore_index
-        if args.do_predict and args.local_rank in [-1, 0]:
-            tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
-            evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test")
+        tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
+        evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test")
         model.train()
 
     # Training
