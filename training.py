@@ -79,7 +79,7 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     else:
         para_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device)
     for batch_idx, batch in enumerate(para_loader):
-        xm.master_print(f"eval {batch_idx}/{len(loader)}")
+        print(f"eval {batch_idx}/{len(loader)}")
         with torch.no_grad():
             # [:2] to ignore teacher logits in the case of distillation
             inputs, targets = batch[:2]

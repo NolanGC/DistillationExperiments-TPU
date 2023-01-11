@@ -41,31 +41,6 @@ dataset_dir = 'data/datasets'
 # ---------------------------------------------------------------------------- #
 
 
-def save_object(object, path):
-    Platform.save_model(object, 'gs://tianjin-distgen/nolan/' + path)
-
-def load_object(path):
-    Platform.load_model('gs://tianjin-distgen/nolan/' + path)
-
-def save_checkpoint(stage, teachers, student, epoch, optimizer):
-    """
-    Saves the program checkpoint including the following parameters:
-    Stage (string) : represents the current stage of the program, either 'teacher0', 'teacher1', 'teacher2' or 'student'
-    Teachers (list) : list of the teacher models state_dictionary
-    Student (model) : student model state_dictionary
-    Epoch (int) : the current epoch of the program
-    Optimizer (optimizer) : the optimizer state_dictionary
-    """
-    checkpoint_object = {
-        'stage': stage,
-        'teachers': [teacher.state_dict() for teacher in teachers],
-        'student': student.state_dict(),
-        'epoch': epoch,
-        'optimizer': optimizer.state_dict()
-    }
-
-    save_object(checkpoint_object, 'checkpoint.pt')
-
 
 FLAGS = {}
 FLAGS['batch_size'] = 16
@@ -80,7 +55,35 @@ FLAGS['ensemble_size'] = 1
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
 FLAGS['permuted'] = False
-def main(rank, current_checkpoint):
+FLAGS['experiment_name'] = "permuted_run_1"
+
+def save_object(object, path):
+    Platform.save_model(object, f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/" + path)
+
+def load_object(path):
+    Platform.load_model(f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/" + path)
+
+def save_checkpoint(stage, teachers, student, epoch, optimizer):
+    """
+    Saves the program checkpoint including the following parameters:
+    Stage (string) : represents the current stage of the program, either 'teacher0', 'teacher1', 'teacher2' or 'student'
+    Teachers (list) : list of the teacher models state_dictionary
+    Student (model) : student model state_dictionary
+    Epoch (int) : the current epoch of the program
+    Optimizer (optimizer) : the optimizer state_dictionary
+    """
+    checkpoint_object = {
+        'stage': stage,
+        'teachers': [teacher.cpu().state_dict() for teacher in teachers],
+        'student': student.cpu().state_dict() if student else None,
+        'epoch': epoch,
+        'optimizer': optimizer.state_dict()
+    }
+
+    save_object(checkpoint_object, 'checkpoint.pt')
+
+
+def main(rank):
     SERIAL_EXEC = xmp.MpSerialExecutor()
 
     train_dataset, test_dataset = SERIAL_EXEC.run(get_dataset)
@@ -109,10 +112,17 @@ def main(rank, current_checkpoint):
           drop_last=True)
     learning_rate = FLAGS['learning_rate'] * xm.xrt_world_size()
     device = xm.xla_device()
+    current_checkpoint = None
 
     stage = 'teacher0'
     teachers = [PreResnet(depth=56).to(device) for i in range(FLAGS['ensemble_size'])]
     current_teacher_index = 0
+    if(Platform.exists(f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/checkpoint.pt")):
+        current_checkpoint = load_object("checkpoint.pt")
+        print("LOADED CHECKPOINT", current_checkpoint)
+    else:
+        current_checkpoint = None
+    
     if(current_checkpoint):
         stage = current_checkpoint['stage']
 
@@ -131,7 +141,7 @@ def main(rank, current_checkpoint):
     
     if(not stage == 'student'):
         for teacher_index in range(current_teacher_index, FLAGS['ensemble_size']):
-            xm.master_print(f"training teacher {teacher_index}")
+            print(f"training teacher {teacher_index}")
             model = teachers[teacher_index]
             optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov'])
             if(current_checkpoint):
@@ -161,12 +171,15 @@ def main(rank, current_checkpoint):
                             epoch=epoch,
                             optimizer=optimizer
                         )
+                        # move back to XLA
+                        teachers = [teacher.to(device) for teacher in teachers] 
                     eval_metrics = eval_epoch(model, test_loader, device=device, epoch=epoch+1, loss_fn=teacher_loss_fn)
                     metrics.update(eval_metrics)
                 records.append(metrics)
                 xm.master_print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
             teachers.append(model)
             xm.rendezvous("finalize")
+    print("student stage")
     teacher = ClassifierEnsemble(*teachers)
     if xm.is_master_ordinal():
         Platform.save_model(teachers[0].cpu().state_dict(), 'gs://tianjin-distgen/nolan/NON-PERMUTE_single_teacher_model.pt')
@@ -196,14 +209,14 @@ def main(rank, current_checkpoint):
     Distilling Student Model
     ------------------------------------------------------------------------------------
     """
-    print('distilliing')
+    print('distilliing student model')
     student = PreResnet(deptch=56).to(device)
     optimizer = torch.optim.SGD(params= student.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
-    if(stage == 'student'):
+    start_epoch = 0
+    if(current_checkpoint and stage == 'student'):
         student.load_state_dict(current_checkpoint['teacher'])
         optimizer.load_state_dict(current_checkpoint['optimizer'])
-    
-    start_epoch = current_checkpoint['epoch']
+        start_epoch = current_checkpoint['epoch']
     student_base_loss = TeacherStudentFwdCrossEntLoss()
     student_loss = ClassifierStudentLoss(student, student_base_loss, alpha=0.0, device=device) # alpha is set to zero
     
@@ -220,26 +233,23 @@ def main(rank, current_checkpoint):
           eval_metrics = eval_epoch(student, test_loader, device=device, epoch=epoch + 1, loss_fn=student_loss, teacher=teacher)
           metrics.update(eval_metrics)
           # save checkpoint
-          save_checkpoint(
-                stage='student',
-                teachers=teachers,
-                student=student,
-                epoch=epoch,
-                optimizer=optimizer
-          )
+          if(xm.is_master_ordinal()):
+              save_checkpoint(
+                    stage='student',
+                    teachers=teachers,
+                    student=student,
+                    epoch=epoch,
+                    optimizer=optimizer
+              )
+              teachers=[teacher.to(device) for teacher in teachers]
+              student.to(device)
       xm.master_print("student epoch: ", epoch, " metrics: ", metrics)
       records.append(metrics)    
     xm.master_print('done')
     if xm.is_master_ordinal():
-        Platform.save_model(student.cpu().state_dict(), 'gs://tianjin-distgen/nolan/NON_PERMUTE_student_model.pt')
+        Platform.save_model(student.cpu().state_dict(), f'gs://tianjin-distgen/nolan/{FLAGS[experiment_name]}/final_student.pt')
     xm.rendezvous("finalize")
 
 if __name__ == "__main__":
-    try:
-        current_checkpoint = load_object('checkpoint.pt')
-        print("LOADED CHECKPOINT", current_checkpoint)
-        print("CHECKPOINT LOADED")
-    except:
-        current_checkpoint = None
-    xmp.spawn(main, args=(current_checkpoint), nprocs=8, start_method='fork')
+    xmp.spawn(main, args=(), nprocs=8, start_method='fork')
 
