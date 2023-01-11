@@ -31,6 +31,7 @@ import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
 import torch.nn.functional as F
+
 from seqeval.metrics import precision_score, recall_score, f1_score
 from torch.nn import CrossEntropyLoss
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset, Dataset
@@ -38,6 +39,7 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 from utils_ner import convert_examples_to_features, get_labels, read_examples_from_file
 from fileutil import Platform
+import perm_utils
 
 from transformers import AdamW, get_linear_schedule_with_warmup
 from transformers import WEIGHTS_NAME, BertConfig, BertForTokenClassification, BertTokenizer
@@ -162,12 +164,36 @@ class TPUGeneralDistiller(GeneralDistiller):
             logits_list_T = results_T['logits']  # list of tensor
             logits_list_S = results_S['logits']  # list of tensor
             total_kd_loss = 0
+
+            xm.mark_step()
+            print(results_S['labels'])
+            assert len(logits_list_T) == 1
+            teacher_logits = logits_list_T[0]
+
+            batch_size = teacher_logits.size(0)
+            seq_len = teacher_logits.size(1)
+            num_labels = teacher_logits.size(2)
+            teacher_targets = torch.argmax(teacher_logits, dim=-1)
+            torch.save({"target": teacher_targets}, "teacher_targets.pt")
+
+            # Appear to make things run faster.
+            xm.mark_step()
+            device = xm.xla_device()
+            perm_mat = perm_utils.batch_permutation_matrix(batch_size * seq_len,
+                num_labels, teacher_targets.view(batch_size * seq_len).clone().cpu()).to(device)
+
+            permuted_teacher_logits = torch.matmul(teacher_logits.view(batch_size * seq_len, 1, num_labels),
+                perm_mat.float().to(device)).view(batch_size, seq_len, num_labels)
+
+            logits_list_T = (permuted_teacher_logits,)
+
             # if 'logits_mask' in results_S:
             #     masks_list_S = results_S['logits_mask']
             #     logits_list_S = select_logits_with_mask(logits_list_S,masks_list_S)  #(mask_sum, num_of_class)
             # if 'logits_mask' in results_T:
             #     masks_list_T = results_T['logits_mask']
             #     logits_list_T = select_logits_with_mask(logits_list_T,masks_list_T)  #(mask_sum, num_of_class)
+
 
             if self.d_config.probability_shift is True:
                 labels_list = results_S['labels']
@@ -524,14 +550,14 @@ def _mp_fn(index, args):
     model.to(args.device)
     model_T.to(args.device)
 
-    # Evaluating teacher
-    logger.info("Evaluating teacher...")
-    labels = get_labels(args.labels)
-    config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
-    # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
-    pad_token_label_id = CrossEntropyLoss().ignore_index
-    tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
-    evaluate(args, model_T, tokenizer, labels, pad_token_label_id, mode="test")
+    # # Evaluating teacher
+    # logger.info("Evaluating teacher...")
+    # labels = get_labels(args.labels)
+    # config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
+    # # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
+    # pad_token_label_id = CrossEntropyLoss().ignore_index
+    # tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
+    # evaluate(args, model_T, tokenizer, labels, pad_token_label_id, mode="test")
 
     logger.info("Training/evaluation parameters %s", args)
     def predict_callback(model,step):
