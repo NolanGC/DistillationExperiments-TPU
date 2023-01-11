@@ -23,7 +23,7 @@ class ClassifierEnsemble(torch.nn.Module):
         for model in self.components:
             model.to(self.device)
             inputs.to(self.device)
-            print(model.device, inputs.device, "model/input device")
+            print("MODEL DEVICE" + model.device)
             stacked_output.append(model(inputs))
         return torch.stack(stacked_output, dim=1)
 
