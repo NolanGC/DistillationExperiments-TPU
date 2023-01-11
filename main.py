@@ -56,7 +56,7 @@ FLAGS['ensemble_size'] = 3
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
 FLAGS['permuted'] = False
-FLAGS['experiment_name'] = "permuted_run_B"
+FLAGS['experiment_name'] = "permuted_run_C"
 
 def save_object(object, path):
     Platform.save_model(object, f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/" + path)
