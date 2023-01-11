@@ -31,12 +31,15 @@ import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
 import torch.nn.functional as F
+
 from seqeval.metrics import precision_score, recall_score, f1_score
 from torch.nn import CrossEntropyLoss
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 from utils_ner import convert_examples_to_features, get_labels, read_examples_from_file
+from fileutil import Platform
+import perm_utils
 
 from transformers import AdamW, get_linear_schedule_with_warmup
 from transformers import WEIGHTS_NAME, BertConfig, BertForTokenClassification, BertTokenizer
@@ -161,12 +164,36 @@ class TPUGeneralDistiller(GeneralDistiller):
             logits_list_T = results_T['logits']  # list of tensor
             logits_list_S = results_S['logits']  # list of tensor
             total_kd_loss = 0
+
+            xm.mark_step()
+            print(results_S['labels'])
+            assert len(logits_list_T) == 1
+            teacher_logits = logits_list_T[0]
+
+            batch_size = teacher_logits.size(0)
+            seq_len = teacher_logits.size(1)
+            num_labels = teacher_logits.size(2)
+            teacher_targets = torch.argmax(teacher_logits, dim=-1)
+            torch.save({"target": teacher_targets}, "teacher_targets.pt")
+
+            # Appear to make things run faster.
+            xm.mark_step()
+            device = xm.xla_device()
+            perm_mat = perm_utils.batch_permutation_matrix(batch_size * seq_len,
+                num_labels, teacher_targets.view(batch_size * seq_len).clone().cpu()).to(device)
+
+            permuted_teacher_logits = torch.matmul(teacher_logits.view(batch_size * seq_len, 1, num_labels),
+                perm_mat.float().to(device)).view(batch_size, seq_len, num_labels)
+
+            logits_list_T = (permuted_teacher_logits,)
+
             # if 'logits_mask' in results_S:
             #     masks_list_S = results_S['logits_mask']
             #     logits_list_S = select_logits_with_mask(logits_list_S,masks_list_S)  #(mask_sum, num_of_class)
             # if 'logits_mask' in results_T:
             #     masks_list_T = results_T['logits_mask']
             #     logits_list_T = select_logits_with_mask(logits_list_T,masks_list_T)  #(mask_sum, num_of_class)
+
 
             if self.d_config.probability_shift is True:
                 labels_list = results_S['labels']
@@ -312,11 +339,11 @@ def train(args, train_dataset,model_T, model, tokenizer, labels, pad_token_label
     logger.info("  Total optimization steps = %d", t_total)
     if args.do_train and args.do_distill:
         distill_config = DistillationConfig(
-            temperature = .1,
+            temperature = args.temperature,
               # intermediate_matches = [{'layer_T':10, 'layer_S':3, 'feature':'hidden','loss': 'hidden_mse', 'weight' : 1}]
             )
         train_config = TrainingConfig(device=args.device,
-            log_dir=args.output_dir,
+            log_dir=None,
             output_dir=args.output_dir)
         def adaptor_T(batch,model_output):
             return {"logits":(model_output[1],),
@@ -523,14 +550,14 @@ def _mp_fn(index, args):
     model.to(args.device)
     model_T.to(args.device)
 
-    # Evaluating teacher
-    logger.info("Evaluating teacher...")
-    labels = get_labels(args.labels)
-    config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
-    # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
-    pad_token_label_id = CrossEntropyLoss().ignore_index
-    tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
-    evaluate(args, model_T, tokenizer, labels, pad_token_label_id, mode="test")
+    # # Evaluating teacher
+    # logger.info("Evaluating teacher...")
+    # labels = get_labels(args.labels)
+    # config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
+    # # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
+    # pad_token_label_id = CrossEntropyLoss().ignore_index
+    # tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
+    # evaluate(args, model_T, tokenizer, labels, pad_token_label_id, mode="test")
 
     logger.info("Training/evaluation parameters %s", args)
     def predict_callback(model,step):
@@ -561,8 +588,6 @@ def _mp_fn(index, args):
         model_to_save = model.module if hasattr(model, "module") else model  # Take care of distributed/parallel training
         model_to_save.cpu().save_pretrained(args.output_dir)
         tokenizer.save_pretrained(args.output_dir)
-
-        # Good practice: save your training arguments together with the trained model
         torch.save(args, os.path.join(args.output_dir, "training_args.bin"))
 
     xm.rendezvous("save_model")
@@ -584,36 +609,12 @@ def _mp_fn(index, args):
             if global_step:
                 result = {"{}_{}".format(global_step, k): v for k, v in result.items()}
             results.update(result)
-        output_eval_file = os.path.join(args.output_dir, "eval_results.txt")
-        with open(output_eval_file, "w") as writer:
-            for key in sorted(results.keys()):
-                writer.write("{} = {}\n".format(key, str(results[key])))
+        output_eval_file = os.path.join(args.output_dir, "eval_results.pt")
+        torch.save(results, output_eval_file)
 
-    # if args.do_predict and args.local_rank in [-1, 0]:
-    #     tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
-    #     model = model_class.from_pretrained(args.output_dir)
-    #     model.to(args.device)
-    #     result, predictions = evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test")
-    #     # Save results
-    #     output_test_results_file = os.path.join(args.output_dir, "test_results.txt")
-    #     with open(output_test_results_file, "w") as writer:
-    #         for key in sorted(result.keys()):
-    #             writer.write("{} = {}\n".format(key, str(result[key])))
-    #     # Save predictions
-    #     output_test_predictions_file = os.path.join(args.output_dir, "test_predictions.txt")
-    #     with open(output_test_predictions_file, "w") as writer:
-    #         with open(os.path.join(args.data_dir, "test.txt"), "r") as f:
-    #             example_id = 0
-    #             for line in f:
-    #                 if line.startswith("-DOCSTART-") or line == "" or line == "\n":
-    #                     writer.write(line)
-    #                     if not predictions[example_id]:
-    #                         example_id += 1
-    #                 elif predictions[example_id]:
-    #                     output_line = line.split()[0] + " " + predictions[example_id].pop(0) + "\n"
-    #                     writer.write(output_line)
-    #                 else:
-    #                     logger.warning("Maximum sequence length exceeded: No prediction for '%s'.", line.split()[0])
+    xm.rendezvous("upload_model")
+    Platform.copytree(args.output_dir, "gs://tianjin-distgen/tjin/" + args.output_dir)
+
     xm.rendezvous("finish")
     return results
 
@@ -622,6 +623,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     ## Required parameters
+    parser.add_argument("--temperature", default=0, type=float, required=True,
+                        help="Temperature to use for distillation.")
     parser.add_argument("--data_dir", default=None, type=str, required=True,
                         help="The input data dir. Should contain the training files for the CoNLL-2003 NER task.")
     parser.add_argument("--model_type", default=None, type=str, required=True,
@@ -707,4 +710,8 @@ if __name__ == "__main__":
     parser.add_argument("--server_port", type=str, default="", help="For distant debugging.")
     args = parser.parse_args()
 
-    xmp.spawn(_mp_fn, nprocs=8, args=[args])
+    if Platform.exists(f"gs://tianjin-distgen/tjin/{args.output_dir}/eval_results.pt"):
+        print("Already done, quitting.")
+        exit(0)
+
+    xmp.spawn(_mp_fn, nprocs=1, args=[args])
