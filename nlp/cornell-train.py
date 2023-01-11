@@ -503,4 +503,4 @@ if __name__ == '__main__':
                         help="number of layers of student model")
     args = parser.parse_args()
 
-    xmp.spawn(_mp_fn, nprocs=8, args=[args])
+    xmp.spawn(_mp_fn, nprocs=1, args=[args])
