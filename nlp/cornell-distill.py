@@ -527,6 +527,7 @@ def _mp_fn(index, args):
             teacher_dir = os.path.join(os.getcwd(), os.path.basename(args.model_name_or_path))
             Platform.copytree(args.model_name_or_path, teacher_dir)
             logger.info(f"Models downloaded from GCP Bucket to {teacher_dir}.")
+            args.model_name_or_path = teacher_dir
         else:
             print("Cannot find teacher directory.")
             exit(1)
