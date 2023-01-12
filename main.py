@@ -56,7 +56,7 @@ FLAGS['ensemble_size'] = 3
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
 FLAGS['permuted'] = False
-FLAGS['experiment_name'] = "permuted_run_B"
+FLAGS['experiment_name'] = "permuted_run_C"
 
 def save_object(object, path):
     Platform.save_model(object, f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/" + path)
@@ -243,12 +243,14 @@ def main(rank):
         student.load_state_dict(current_checkpoint['student'])
     if(current_checkpoint):
         start_epoch = current_checkpoint['epoch']
+        print("STARTING AT: ",start_epoch)
     student_base_loss = TeacherStudentFwdCrossEntLoss()
     student_loss = ClassifierStudentLoss(student, student_base_loss, alpha=0.0, device=device) # alpha is set to zero
     records = []
     eval_metrics = eval_epoch(student, test_loader, device=device, epoch=0, loss_fn=student_loss, teacher=teacher)
     records.append(eval_metrics)
     for epoch in range(start_epoch, FLAGS['student_epochs']):
+      print("BEGIN DISTILL EPOCH", epoch)
       metrics = {}
       train_metrics = distillation_epoch(student, distill_loader, optimizer,
                                             lr_scheduler, epoch=epoch + 1, loss_fn=student_loss, device=device, dataset=train_dataset, drop_last=True, sampler=distill_sampler, num_workers=FLAGS['num_workers'])
@@ -268,7 +270,8 @@ def main(rank):
             print("saved checkpoint")
             teachers=[teacher.to(device) for teacher in teachers]
             student.to(device)
-            save_optimizer(optimizer)
+      save_optimizer(optimizer)
+      print("SAVED OPTIMIZER")
       xm.master_print("student epoch: ", epoch, " metrics: ", metrics)
       records.append(metrics)    
     xm.master_print('done')
