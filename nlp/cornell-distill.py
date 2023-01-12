@@ -307,7 +307,7 @@ def train(args, train_dataset,model_T, model, tokenizer, labels, pad_token_label
         num_replicas=xm.xrt_world_size(),
         rank=xm.get_ordinal(),
         shuffle=True,
-        seed=42)
+        seed=args.seed)
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
