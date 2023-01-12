@@ -56,7 +56,7 @@ FLAGS['ensemble_size'] = 3
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
 FLAGS['permuted'] = False
-FLAGS['experiment_name'] = "permuted_run_B"
+FLAGS['experiment_name'] = "permuted_run_D"
 
 def save_object(object, path):
     Platform.save_model(object, f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/" + path)
@@ -152,13 +152,11 @@ def main(rank):
             print(f"training teacher {teacher_index}")
             model = teachers[teacher_index]
             optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov'])
-            
             if(Platform.exists(f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/optimizer.pt")):
                 print("ATTEMPT LOAD STATE DICT OPTIM")
                 state_dict = load_object('optimizer.pt')
                 optimizer.load_state_dict(state_dict)
                 print("SUCCESS")
-
             teacher_loss_fn = ClassifierTeacherLoss(model, device)
             records = []
             eval_metrics = eval_epoch(model, test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
@@ -209,7 +207,6 @@ def main(rank):
     Distilling Data Preparation + Collect Initial Metrics
     ------------------------------------------------------------------------------------
     """
-
     distill_sampler = torch.utils.data.distributed.DistributedSampler(
           train_dataset,
           num_replicas=xm.xrt_world_size(),

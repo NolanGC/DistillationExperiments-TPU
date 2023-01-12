@@ -122,7 +122,7 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     )
     # only return generalization metrics if there is no teacher
     if teacher is None:
-        print(metrics)
+        print(f'evaluation metrics for {xm.get_ordinal()}:' + str(metrics))
         return metrics
 
     # add fidelity metrics
@@ -132,7 +132,9 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     #if len(teacher.components) == 1 and hasattr(teacher.components[0], 'preacts') and with_cka:
     #    cka = preact_cka(teacher.components[0], net, loader)
     #    metrics.update({f'test_cka_{i}': val for i, val in enumerate(cka)})
-    print(metrics)
+    print("EVAL METRICS FOR")
+    print(xm.get_ordinal())
+    print(f'evaluation metrics for {xm.get_ordinal()}:', metrics)
     return metrics
 
 def distillation_epoch(student, train_loader, optimizer, lr_scheduler, device, epoch,
