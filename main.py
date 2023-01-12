@@ -56,7 +56,7 @@ FLAGS['ensemble_size'] = 3
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
 FLAGS['permuted'] = False
-FLAGS['experiment_name'] = "permuted_run_E"
+FLAGS['experiment_name'] = "permuted_run_F"
 
 def save_object(object, path):
     Platform.save_model(object, f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/" + path)
@@ -148,10 +148,12 @@ def main(rank):
             teachers[1].load_state_dict(current_checkpoint['teachers'][1])
             teachers[2].load_state_dict(current_checkpoint['teachers'][2])
 
+        optimizer = optim.SGD(teachers[current_teacher_index].parameters(), lr=learning_rate, momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov'])
+
         if(Platform.exists(f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/optimizer.pt")):
             state_dict = load_object('optimizer.pt')
             optimizer.load_state_dict(state_dict)
-        optimizer = optim.SGD(teachers[current_teacher_index].parameters(), lr=learning_rate, momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov'])
+
         lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
         lr_scheduler.load_state_dict(current_checkpoint['scheduler'])
     
