@@ -38,7 +38,7 @@ class Platform:
 
     @staticmethod
     def copyfile(path1, path2):
-        tf.io.gfile.copy(path1, path2)
+        tf.io.gfile.copy(path1, path2, overwrite=True)
 
     @classmethod
     def copytree(cls, source, dest):
