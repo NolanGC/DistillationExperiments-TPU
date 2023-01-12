@@ -552,11 +552,11 @@ def _mp_fn(index, args):
                                         config=config,
                                         cache_dir=args.cache_dir if args.cache_dir else None)
     else:
-        config = config_class.from_pretrained(args.config_name if args.config_name else args.model_name_or_path,
+        config = config_class.from_pretrained(args.config_name if args.config_name else teacher_dir,
                                           num_labels=num_labels,
                                           cache_dir=args.cache_dir if args.cache_dir else None)
         config.num_hidden_layers=args.num_hidden_layers
-        model = model_class.from_pretrained(args.model_name_or_path,
+        model = model_class.from_pretrained(teacher_dir,
                                         from_tf=bool(".ckpt" in args.model_name_or_path),
                                         config=config,
                                         cache_dir=args.cache_dir if args.cache_dir else None)
