@@ -32,6 +32,7 @@ import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
 import torch.nn.functional as F
 
+from dataclasses import dataclass
 from seqeval.metrics import precision_score, recall_score, f1_score
 from torch.nn import CrossEntropyLoss
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset, Dataset
@@ -80,10 +81,12 @@ class TPUGeneralDistiller(GeneralDistiller):
              model_S,
              adaptor_T,
              adaptor_S,
+             permute_logits,
              custom_matches = None):
         # custom_matches=[{'module_T': module_T, 'module_S':module_S,
         #                 'loss': loss, 'weight': weight},...]
         super(TPUGeneralDistiller, self).__init__(train_config, distill_config, model_T, model_S, adaptor_T, adaptor_S)
+        self.permute_logits = permute_logits
 
     def train_with_num_epochs(self, optimizer, scheduler, tqdm_disable, dataloader, max_grad_norm, num_epochs, callback, batch_postprocessor, **args):
         device = xm.xla_device()
@@ -165,27 +168,27 @@ class TPUGeneralDistiller(GeneralDistiller):
             logits_list_S = results_S['logits']  # list of tensor
             total_kd_loss = 0
 
-            xm.mark_step()
-            print(results_S['labels'])
-            assert len(logits_list_T) == 1
-            teacher_logits = logits_list_T[0]
+            if self.permute_logits:
+                xm.mark_step()
+                assert len(logits_list_T) == 1
+                teacher_logits = logits_list_T[0]
 
-            batch_size = teacher_logits.size(0)
-            seq_len = teacher_logits.size(1)
-            num_labels = teacher_logits.size(2)
-            teacher_targets = torch.argmax(teacher_logits, dim=-1)
-            torch.save({"target": teacher_targets}, "teacher_targets.pt")
+                batch_size = teacher_logits.size(0)
+                seq_len = teacher_logits.size(1)
+                num_labels = teacher_logits.size(2)
+                teacher_targets = torch.argmax(teacher_logits, dim=-1)
+                # teacher_targets = results_T["labels"][0]
+                # teacher_targets = torch.maximum(torch.tensor(0), teacher_targets)
+                # Appear to make things run faster.
+                xm.mark_step()
+                device = xm.xla_device()
+                perm_mat = perm_utils.batch_permutation_matrix(batch_size * seq_len,
+                    num_labels, teacher_targets.view(batch_size * seq_len).clone().cpu()).to(device)
 
-            # Appear to make things run faster.
-            xm.mark_step()
-            device = xm.xla_device()
-            perm_mat = perm_utils.batch_permutation_matrix(batch_size * seq_len,
-                num_labels, teacher_targets.view(batch_size * seq_len).clone().cpu()).to(device)
+                permuted_teacher_logits = torch.matmul(teacher_logits.view(batch_size * seq_len, 1, num_labels),
+                    perm_mat.float().to(device)).view(batch_size, seq_len, num_labels)
 
-            permuted_teacher_logits = torch.matmul(teacher_logits.view(batch_size * seq_len, 1, num_labels),
-                perm_mat.float().to(device)).view(batch_size, seq_len, num_labels)
-
-            logits_list_T = (permuted_teacher_logits,)
+                logits_list_T = (permuted_teacher_logits,)
 
             # if 'logits_mask' in results_S:
             #     masks_list_S = results_S['logits_mask']
@@ -347,12 +350,16 @@ def train(args, train_dataset,model_T, model, tokenizer, labels, pad_token_label
             output_dir=args.output_dir)
         def adaptor_T(batch,model_output):
             return {"logits":(model_output[1],),
-                    'logits_mask':(batch['attention_mask'],)}
+                    'logits_mask':(batch['attention_mask'],),
+                    'labels':(batch['labels'],)}
         def adaptor_S(batch,model_output):
             return {"logits":(model_output[1],),
-                    'logits_mask':(batch['attention_mask'],)}
+                    'logits_mask':(batch['attention_mask'],),
+                    'labels':(batch['labels'],)}
 
-        distiller=TPUGeneralDistiller(train_config,distill_config,model_T,model,adaptor_T,adaptor_S,)
+        distiller=TPUGeneralDistiller(train_config,distill_config,
+            model_T,model,adaptor_T,adaptor_S,
+            permute_logits=args.permute_logits)
         distiller.train(optimizer,train_dataloader,args.num_train_epochs,
                         scheduler_class=scheduler_class, scheduler_args=scheduler_args,
                         max_grad_norm=1.0, callback=predict_callback)
@@ -514,13 +521,24 @@ def _mp_fn(index, args):
 
     args.model_type = args.model_type.lower()
     config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
-    config = config_class.from_pretrained(args.config_name if args.config_name else args.model_name_or_path,
+
+    if xm.is_master_ordinal():
+        if Platform.exists(args.model_name_or_path):
+            teacher_dir = os.path.join(os.getcwd(), os.path.basename(args.model_name_or_path))
+            Platform.copytree(args.model_name_or_path, teacher_dir)
+            logger.info(f"Models downloaded from GCP Bucket to {teacher_dir}.")
+        else:
+            print("Cannot find teacher directory.")
+            exit(1)
+
+    xm.rendezvous("Teacher model downloading.")
+    config = config_class.from_pretrained(teacher_dir,
                                           num_labels=num_labels,
                                           cache_dir=args.cache_dir if args.cache_dir else None)
-    tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name if args.tokenizer_name else args.model_name_or_path,
+    tokenizer = tokenizer_class.from_pretrained(teacher_dir,
                                                 do_lower_case=args.do_lower_case,
                                                 cache_dir=args.cache_dir if args.cache_dir else None)
-    model_T = model_class.from_pretrained(args.model_name_or_path,
+    model_T = model_class.from_pretrained(teacher_dir,
                                         from_tf=bool(".ckpt" in args.model_name_or_path),
                                         config=config,
                                         cache_dir=args.cache_dir if args.cache_dir else None)
@@ -618,100 +636,58 @@ def _mp_fn(index, args):
     xm.rendezvous("finish")
     return results
 
+@dataclass
+class Options:
+    temperature : int
+    data_dir : str
+    model_type : str
+    model_name_or_path : str
+    output_dir : str
+    num_hidden_layers : int
+    nprocs : int
+    permute_logits : int
+
+    model_name_or_path_student : str = None
+    labels : str = None
+    config_name : str = None
+    tokenizer_name : str = None
+    cache_dir : str = None
+    max_seq_length : int = 128
+    do_train : bool = True
+    do_distill : bool = True
+    do_eval : bool = True
+    do_predict : bool = True
+    evaluate_during_training : bool = True
+    do_lower_case : bool = False
+    per_gpu_train_batch_size : int = 8
+    per_gpu_eval_batch_size : int = 8
+    gradient_accumulation_steps : int = 1
+    learning_rate : float = 5e-5
+    weight_decay : float = 0.0
+    adam_epsilon : float = 1e-8
+    max_grad_norm : float = 1.0
+    num_train_epochs : float = 4.0
+    max_steps : int = -1
+    warmup_steps : int = 0
+    logging_steps : int = 50
+    save_steps : int = 50
+    eval_all_checkpoints : bool = True
+    no_cuda : bool = False
+    overwrite_output_dir : bool = True
+    overwrite_cache : bool = True
+    seed : int = 42
+    fp16 : bool = False
+    fp16_opt_level : str = "O1"
+    local_rank : int = - 1
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-
-    ## Required parameters
-    parser.add_argument("--temperature", default=0, type=float, required=True,
-                        help="Temperature to use for distillation.")
-    parser.add_argument("--data_dir", default=None, type=str, required=True,
-                        help="The input data dir. Should contain the training files for the CoNLL-2003 NER task.")
-    parser.add_argument("--model_type", default=None, type=str, required=True,
-                        help="Model type selected in the list: " + ", ".join(MODEL_CLASSES.keys()))
-    parser.add_argument("--model_name_or_path", default=None, type=str, required=True,
-                        help="Path to pre-trained model or shortcut name selected in the list: " + ", ".join(ALL_MODELS))
-    parser.add_argument("--model_name_or_path_student", default=None, type=str, required=False,
-                        help="Path to pre-trained model or shortcut name selected in the list: " + ", ".join(ALL_MODELS))
-    parser.add_argument("--output_dir", default=None, type=str, required=True,
-                        help="The output directory where the model predictions and checkpoints will be written.")
-    parser.add_argument("--num_hidden_layers", default=3, type=int,
-                        help="number of layers of student model")
-
-    ## Other parameters
-    parser.add_argument("--labels", default="", type=str,
-                        help="Path to a file containing all labels. If not specified, CoNLL-2003 labels are used.")
-    parser.add_argument("--config_name", default="", type=str,
-                        help="Pretrained config name or path if not the same as model_name")
-    parser.add_argument("--tokenizer_name", default="", type=str,
-                        help="Pretrained tokenizer name or path if not the same as model_name")
-    parser.add_argument("--cache_dir", default="", type=str,
-                        help="Where do you want to store the pre-trained models downloaded from s3")
-    parser.add_argument("--max_seq_length", default=128, type=int,
-                        help="The maximum total input sequence length after tokenization. Sequences longer "
-                             "than this will be truncated, sequences shorter will be padded.")
-    parser.add_argument("--do_train", action="store_true",
-                        help="Whether to run training.")
-    parser.add_argument("--do_distill", action="store_true",
-                        help="Whether to run training.")
-    parser.add_argument("--do_eval", action="store_true",
-                        help="Whether to run eval on the dev set.")
-    parser.add_argument("--do_predict", action="store_true",
-                        help="Whether to run predictions on the test set.")
-    parser.add_argument("--evaluate_during_training", action="store_true",
-                        help="Whether to run evaluation during training at each logging step.")
-    parser.add_argument("--do_lower_case", action="store_true",
-                        help="Set this flag if you are using an uncased model.")
-
-    parser.add_argument("--per_gpu_train_batch_size", default=8, type=int,
-                        help="Batch size per GPU/CPU for training.")
-    parser.add_argument("--per_gpu_eval_batch_size", default=8, type=int,
-                        help="Batch size per GPU/CPU for evaluation.")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=1,
-                        help="Number of updates steps to accumulate before performing a backward/update pass.")
-    parser.add_argument("--learning_rate", default=5e-5, type=float,
-                        help="The initial learning rate for Adam.")
-    parser.add_argument("--weight_decay", default=0.0, type=float,
-                        help="Weight decay if we apply some.")
-    parser.add_argument("--adam_epsilon", default=1e-8, type=float,
-                        help="Epsilon for Adam optimizer.")
-    parser.add_argument("--max_grad_norm", default=1.0, type=float,
-                        help="Max gradient norm.")
-    parser.add_argument("--num_train_epochs", default=3.0, type=float,
-                        help="Total number of training epochs to perform.")
-    parser.add_argument("--max_steps", default=-1, type=int,
-                        help="If > 0: set total number of training steps to perform. Override num_train_epochs.")
-    parser.add_argument("--warmup_steps", default=0, type=float,
-                        help="Linear warmup over warmup_steps.")
-
-    parser.add_argument("--logging_steps", type=int, default=50,
-                        help="Log every X updates steps.")
-    parser.add_argument("--save_steps", type=int, default=50,
-                        help="Save checkpoint every X updates steps.")
-    parser.add_argument("--eval_all_checkpoints", action="store_true",
-                        help="Evaluate all checkpoints starting with the same prefix as model_name ending and ending with step number")
-    parser.add_argument("--no_cuda", action="store_true",
-                        help="Avoid using CUDA when available")
-    parser.add_argument("--overwrite_output_dir", action="store_true",
-                        help="Overwrite the content of the output directory")
-    parser.add_argument("--overwrite_cache", action="store_true",
-                        help="Overwrite the cached training and evaluation sets")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="random seed for initialization")
-
-    parser.add_argument("--fp16", action="store_true",
-                        help="Whether to use 16-bit (mixed) precision (through NVIDIA apex) instead of 32-bit")
-    parser.add_argument("--fp16_opt_level", type=str, default="O1",
-                        help="For fp16: Apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3']."
-                             "See details at https://nvidia.github.io/apex/amp.html")
-    parser.add_argument("--local_rank", type=int, default=-1,
-                        help="For distributed training: local_rank")
-    parser.add_argument("--server_ip", type=str, default="", help="For distant debugging.")
-    parser.add_argument("--server_port", type=str, default="", help="For distant debugging.")
-    args = parser.parse_args()
+    from simple_parsing import ArgumentParser
+    parser = ArgumentParser()
+    parser.add_arguments(Options, dest="options")
+    args = parser.parse_args().options
 
     if Platform.exists(f"gs://tianjin-distgen/tjin/{args.output_dir}/eval_results.pt"):
         print("Already done, quitting.")
         exit(0)
 
-    xmp.spawn(_mp_fn, nprocs=1, args=[args])
+    xmp.spawn(_mp_fn, nprocs=args.nprocs, args=[args])
