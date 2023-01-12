@@ -56,7 +56,7 @@ FLAGS['ensemble_size'] = 3
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
 FLAGS['permuted'] = False
-FLAGS['experiment_name'] = "permuted_run_D"
+FLAGS['experiment_name'] = "permuted_run_E"
 
 def save_object(object, path):
     Platform.save_model(object, f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/" + path)
@@ -65,7 +65,7 @@ def load_object(path):
     print(f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/" + path)
     return Platform.load_model(f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/" + path, map_location='cpu')
 
-def save_checkpoint(stage, teachers, student, epoch):
+def save_checkpoint(stage, teachers, student, epoch, scheduler):
     """
     Saves the program checkpoint including the following parameters:
     Stage (string) : represents the current stage of the program, either 'teacher0', 'teacher1', 'teacher2' or 'student'
@@ -82,6 +82,7 @@ def save_checkpoint(stage, teachers, student, epoch):
         'teachers': [teacher.cpu().state_dict() for teacher in teachers],
         'student': student.cpu().state_dict() if student else None,
         'epoch': epoch,
+        'scheduler': scheduler.state_dict()
         #'optimizer': optimizer.state_dict()
     }
     save_object(checkpoint_object, 'checkpoint.pt')
@@ -146,17 +147,21 @@ def main(rank):
             teachers[0].load_state_dict(current_checkpoint['teachers'][0])
             teachers[1].load_state_dict(current_checkpoint['teachers'][1])
             teachers[2].load_state_dict(current_checkpoint['teachers'][2])
+
+        if(Platform.exists(f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/optimizer.pt")):
+            state_dict = load_object('optimizer.pt')
+            optimizer.load_state_dict(state_dict)
+        optimizer = optim.SGD(teachers[current_teacher_index].parameters(), lr=learning_rate, momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov'])
+        lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
+        lr_scheduler.load_state_dict(current_checkpoint['scheduler'])
     
     if(not stage == 'student'):
         for teacher_index in range(current_teacher_index, FLAGS['ensemble_size']):
             print(f"training teacher {teacher_index}")
             model = teachers[teacher_index]
-            optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov'])
-            if(Platform.exists(f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/optimizer.pt")):
-                print("ATTEMPT LOAD STATE DICT OPTIM")
-                state_dict = load_object('optimizer.pt')
-                optimizer.load_state_dict(state_dict)
-                print("SUCCESS")
+            if(not teacher_index == current_teacher_index or not current_checkpoint):
+                optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov'])
+                lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
             teacher_loss_fn = ClassifierTeacherLoss(model, device)
             records = []
             eval_metrics = eval_epoch(model, test_loader, epoch=0, device=device, loss_fn=teacher_loss_fn)
@@ -164,7 +169,6 @@ def main(rank):
             xm.master_print(f"initial eval metrics:", eval_metrics)
             xm.master_print('<-- training begin -->')
             start_epoch = 0
-            lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
             if(current_checkpoint and stage[-1] == str(teacher_index)):
                 start_epoch = current_checkpoint['epoch']
             for epoch in range(start_epoch, FLAGS['teacher_epochs']):
@@ -183,6 +187,7 @@ def main(rank):
                         teachers=teachers,
                         student=None,
                         epoch=epoch,
+                        scheduler=lr_scheduler,
                         #optimizer=optimizer
                     )
                     print("SAVED 1")
@@ -238,6 +243,7 @@ def main(rank):
         optimizer.load_state_dict(load_object('optimizer.pt'))
     if(current_checkpoint and current_checkpoint['student']):
         student.load_state_dict(current_checkpoint['student'])
+        lr_scheduler.load_state_dict(current_checkpoint['scheduler'])
     if(current_checkpoint):
         start_epoch = current_checkpoint['epoch']
         print("STARTING AT: ",start_epoch)
@@ -262,6 +268,7 @@ def main(rank):
                 teachers=teachers,
                 student=student,
                 epoch=epoch,
+                scheduler=lr_scheduler,
                 ##optimizer=optimizer
             )
             print("saved checkpoint")
@@ -278,4 +285,5 @@ def main(rank):
 
 if __name__ == "__main__":
     xmp.spawn(main, args=(), nprocs=8, start_method='fork')
+
 

@@ -22,6 +22,7 @@ import glob
 import logging
 import os
 import random
+import json
 
 import numpy as np
 import torch
@@ -192,6 +193,8 @@ def evaluate(args, model, tokenizer, labels, pad_token_label_id, mode, prefix=""
     preds = None
     out_label_ids = None
     model.eval()
+
+    assert args.nprocs == 1, "Only 1 workers should be evaluating."
     for batch in tqdm(eval_dataloader, desc="Evaluating", disable=True):
         batch = tuple(t.to(args.device) for t in batch)
 
@@ -358,8 +361,6 @@ def _mp_fn(index, args):
 
         model_to_save.cpu().save_pretrained(args.output_dir)
         tokenizer.save_pretrained(args.output_dir)
-        Platform.copytree(args.output_dir, "gs://tianjin-distgen/tjin/" + args.output_dir)
-
         model_to_save.to(args.device)
 
         # Good practice: save your training arguments together with the trained model
@@ -389,6 +390,8 @@ def _mp_fn(index, args):
             for key in sorted(results.keys()):
                 writer.write("{} = {}\n".format(key, str(results[key])))
 
+    if xm.is_master_ordinal():
+    	Platform.copytree(args.output_dir, "gs://tianjin-distgen/tjin/" + args.output_dir)
     # if args.do_predict and args.local_rank in [-1, 0]:
     #     tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
     #     model = model_class.from_pretrained(args.output_dir)
@@ -430,7 +433,8 @@ if __name__ == '__main__':
                         help="Path to pre-trained model or shortcut name selected in the list: " + ", ".join(ALL_MODELS))
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model predictions and checkpoints will be written.")
-
+    parser.add_argument("--nprocs", default=None, type=int, required=True,
+    					help="The number of processors.")
     ## Other parameters
     parser.add_argument("--labels", default="", type=str,
                         help="Path to a file containing all labels. If not specified, CoNLL-2003 labels are used.")
@@ -503,4 +507,4 @@ if __name__ == '__main__':
                         help="number of layers of student model")
     args = parser.parse_args()
 
-    xmp.spawn(_mp_fn, nprocs=1, args=[args])
+    xmp.spawn(_mp_fn, nprocs=args.nprocs, args=[args])
