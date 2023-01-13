@@ -53,7 +53,7 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn
 def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=True, isDistillation=False):
     """
     Evaluate the model on the test set.
-    Inputs: 
+    Inputs:
         net: the model to evaluate
         loader: the data loader for the test set
         epoch: the current epoch
@@ -64,9 +64,9 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
         metrics: a dictionary of metrics with format
     """
     net.eval()
-    test_loss = torch.tensor(0.).to(device) 
+    test_loss = torch.tensor(0.).to(device)
     correct = torch.tensor(0.).to(device)
-    total = 0
+    total = torch.tensor(0.).to(device)
     agree = torch.tensor(0.).to(device)
     nll = torch.tensor(0.).to(device)
     kl = torch.tensor(0.).to(device)
@@ -90,7 +90,7 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
 
             test_loss += loss
             _, predicted = logits.max(1)
-            total += targets.size(0)
+            total += torch.tensor(targets.size(0))
             correct += predicted.eq(targets).sum()
             nll += -F.log_softmax(logits, dim=-1)[..., targets].mean()
             if teacher is not None:
@@ -105,24 +105,28 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
             #    t1 + t2 for t1, t2 in zip(ece_stats, batch_ece_stats)
             #]
             xm.mark_step()
+
+    total, correct, test_loss, kl, nll = xm.all_reduce(xm.REDUCE_SUM, [total, correct, test_loss, kl, nll])
     xm.mark_step()
     #if(not ece_stats is None):
     #    ece = expected_calibration_err(*ece_stats, num_samples=total)
     #else:
     #    ece = None
     metrics = dict(
-        test_loss=test_loss / len(loader),
+        test_loss=test_loss / (xm.xrt_world_size() * len(loader)),
         test_acc=100. * correct / total,
         #test_ece=ece,
-        test_nll=nll / len(loader),
+        test_nll=nll / (xm.xrt_world_size() * len(loader)),
         epoch=epoch,
+        total=total,
+        correct=correct,
     )
     # only return generalization metrics if there is no teacher
     if teacher is None:
         return metrics
 
     # add fidelity metrics
-    metrics.update(dict(test_ts_agree=100. * agree / total, test_ts_kl=kl / len(loader)))
+    metrics.update(dict(test_ts_agree=100. * agree / total, test_ts_kl=kl / (xm.xrt_world_size() * len(loader))))
     #if(cka is None):
     #    return metrics
     #if len(teacher.components) == 1 and hasattr(teacher.components[0], 'preacts') and with_cka:
