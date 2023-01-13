@@ -29,10 +29,9 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn
     train_loss = torch.tensor(0.).to(device)
     correct = torch.tensor(0.).to(device)
     total = 0
-    print('STARTING SUPERVISION ON', device)
     para_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device)
     for batch_idx, (inputs, targets) in enumerate(para_loader):
-        print(f"supervised {batch_idx}/{len(loader)}")
+        xm.master_print(f"supervised {batch_idx}/{len(loader)}")
         optimizer.zero_grad()
         loss, outputs = loss_fn(inputs, targets)
         loss.backward()
@@ -49,7 +48,6 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn
             lr=lr_scheduler.get_last_lr()[0],
             epoch=epoch
         )
-    print(f"Learning rate for {xm.get_ordinal()} is {lr_scheduler.get_last_lr()[0]}")
     return metrics
 
 
@@ -75,12 +73,11 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     kl = torch.tensor(0.).to(device)
     ece_stats = None
     if(isDistillation):
-        print("isDistillation True")
         para_loader = loader
     else:
         para_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device)
     for batch_idx, batch in enumerate(para_loader):
-        print(f"eval {batch_idx}/{len(loader)} {xm.get_ordinal()} {len(batch[0])}")
+        xm.master_print(f"eval {batch_idx}/{len(loader)}")
         with torch.no_grad():
             # [:2] to ignore teacher logits in the case of distillation
             inputs, targets = batch[:2]
@@ -110,10 +107,10 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
             #]
             xm.mark_step()
     xm.mark_step()
-    if(not ece_stats is None):
-        ece = expected_calibration_err(*ece_stats, num_samples=total)
-    else:
-        ece = None
+    #if(not ece_stats is None):
+    #    ece = expected_calibration_err(*ece_stats, num_samples=total)
+    #else:
+    #    ece = None
     metrics = dict(
         test_loss=test_loss / len(loader),
         test_acc=100. * correct / total,
@@ -123,7 +120,6 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     )
     # only return generalization metrics if there is no teacher
     if teacher is None:
-        print(f'evaluation metrics for {xm.get_ordinal()}:' + str(metrics))
         return metrics
 
     # add fidelity metrics
@@ -133,9 +129,6 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     #if len(teacher.components) == 1 and hasattr(teacher.components[0], 'preacts') and with_cka:
     #    cka = preact_cka(teacher.components[0], net, loader)
     #    metrics.update({f'test_cka_{i}': val for i, val in enumerate(cka)})
-    print("EVAL METRICS FOR")
-    print(xm.get_ordinal())
-    print(f'evaluation metrics for {xm.get_ordinal()}:', metrics)
     return metrics
 
 def distillation_epoch(student, train_loader, optimizer, lr_scheduler, device, epoch,
@@ -147,7 +140,7 @@ def distillation_epoch(student, train_loader, optimizer, lr_scheduler, device, e
     total = 0
     real_total = 0
     kl = torch.tensor(0.).to(device)
-    ece_stats = None
+    #ece_stats = None
     num_batches = len(train_loader)
     train_loader.loader = train_loader._make_loader(dataset, drop_last, sampler, num_workers)
     for batch_idx, (inputs, targets, teacher_logits, temp) in enumerate(train_loader):
@@ -171,23 +164,23 @@ def distillation_epoch(student, train_loader, optimizer, lr_scheduler, device, e
             Categorical(logits=student_logits)
         ).mean()
 
-        batch_ece_stats = batch_calibration_stats(student_logits[:real_batch_size], targets, num_bins=10)
-        ece_stats = batch_ece_stats if ece_stats is None else [
-            t1 + t2 for t1, t2 in zip(ece_stats, batch_ece_stats)
-        ]
+        #batch_ece_stats = batch_calibration_stats(student_logits[:real_batch_size], targets, num_bins=10)
+        #ece_stats = batch_ece_stats if ece_stats is None else [
+        #    t1 + t2 for t1, t2 in zip(ece_stats, batch_ece_stats)
+        #]
 
     lr_scheduler.step()
     if hasattr(loss_fn.base_loss, 'step'):
         loss_fn.base_loss.step()
-    if(ece_stats):
-        ece = expected_calibration_err(*ece_stats, num_samples=total)
-    else:
-        ece = None
+    #if(ece_stats):
+    #    ece = expected_calibration_err(*ece_stats, num_samples=total)
+    #else:
+    #    ece = None
     metrics = dict(
             train_loss=train_loss / num_batches,
             train_acc=100 * correct / real_total,
             train_ts_agree=100 * agree / total,
-            train_ece=ece,
+            #train_ece=ece,
             train_ts_kl=kl / num_batches,
             lr=lr_scheduler.get_last_lr()[0],
             epoch=epoch

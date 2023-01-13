@@ -18,6 +18,8 @@ import torch_xla.utils.serialization as xser
 import torchvision
 import argparse
 from torchvision import datasets, transforms
+import argparse
+from dataclasses import dataclass
 # ---------------------------------------------------------------------------- #
 #                                module imports                                #
 # ---------------------------------------------------------------------------- #
@@ -41,24 +43,24 @@ dataset_dir = 'data/datasets'
 #                               experiment flags                               #
 # ---------------------------------------------------------------------------- #
 
-FLAGS = {}
-FLAGS['batch_size'] = 16
-FLAGS['num_workers'] = 8 #TODO from XLA example, verify this number is optimal
-FLAGS['learning_rate'] = 5e-2
-FLAGS['momentum'] = 0.9
-FLAGS['weight_decay'] = 1e-4
-FLAGS['nestrov'] = True
-FLAGS['teacher_epochs'] = 200
-FLAGS['student_epochs'] = 300
-FLAGS['ensemble_size'] = 3
-FLAGS['cosine_annealing_etamin'] = 1e-6
-FLAGS['evaluation_frequency'] = 10 # every 10 epochs
-FLAGS['permuted'] = False
-FLAGS['experiment_name'] = "permuted_run_fullrun1"
+@dataclass
+class Options:
+    batch_size : int
+    num_workers : int
+    learning_rate : float
+    momentum : float
+    weight_decay : float
+    nesterov : bool
+    teacher_epochs : int
+    student_epochs : int
+    ensemble_size : int
+    cosine_annealing_etamin : float
+    evaluation_frequency : int
+    permuted : bool
+    experiment_name : str
 
 def load_object(path):
-    print(f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/" + path)
-    Platform.copyfile(f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/" + path, 'temp_checkpointdl.pt')
+    Platform.copyfile(f"gs://tianjin-distgen/nolan/{args.experiment_name}/" + path, 'temp_checkpointdl.pt')
     obj = xser.load('temp_checkpointdl.pt')
     return obj
 
@@ -85,9 +87,9 @@ def save_checkpoint(stage, teachers, student, epoch, scheduler, optimizer):
     }
     xm.save(checkpoint_object, 'checkpoint.pt')
     if(xm.is_master_ordinal()):
-        Platform.copyfile('checkpoint.pt', f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/checkpoint.pt")
+        Platform.copyfile('checkpoint.pt', f"gs://tianjin-distgen/nolan/{args.experiment_name}/checkpoint.pt")
 
-def main(rank):
+def main(rank, args):
     SERIAL_EXEC = xmp.MpSerialExecutor()
 
     train_dataset, test_dataset = SERIAL_EXEC.run(get_dataset)
@@ -103,27 +105,27 @@ def main(rank):
             shuffle=False)
     train_loader = torch.utils.data.DataLoader(
           train_dataset,
-          batch_size=FLAGS['batch_size'],
+          batch_size=args.batch_size,
           sampler=train_sampler,
-          num_workers=FLAGS['num_workers'],
+          num_workers=args.num_workers,
           drop_last=True)
     test_loader = torch.utils.data.DataLoader(
           test_dataset,
-          batch_size=FLAGS['batch_size'],
+          batch_size=args.batch_size,
           sampler=test_sampler,
           shuffle=False,
-          num_workers=FLAGS['num_workers'],
+          num_workers=args.num_workers,
           drop_last=True)
-    learning_rate = FLAGS['learning_rate']
+    learning_rate = args.learning_rate
     device = xm.xla_device()
     current_checkpoint = None
 
     stage = 'teacher0'
-    teachers = [PreResnet(depth=56).to(device) for i in range(FLAGS['ensemble_size'])]
+    teachers = [PreResnet(depth=56).to(device) for i in range(args.ensemble_size)]
     current_teacher_index = 0
-    if(Platform.exists(f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/checkpoint.pt")):
+    if(Platform.exists(f"gs://tianjin-distgen/nolan/{args.experiment_name}/checkpoint.pt")):
         current_checkpoint = load_object("checkpoint.pt")
-        print("LOADED CHECKPOINT", current_checkpoint['stage'], current_checkpoint['epoch'])
+        xm.master_print("LOADED CHECKPOINT", current_checkpoint['stage'], current_checkpoint['epoch'])
     else:
         current_checkpoint = None
     
@@ -143,18 +145,18 @@ def main(rank):
             teachers[1].load_state_dict(current_checkpoint['teachers'][1])
             teachers[2].load_state_dict(current_checkpoint['teachers'][2])
 
-        optimizer = optim.SGD(teachers[current_teacher_index].parameters(), lr=learning_rate, momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov'])
+        optimizer = optim.SGD(teachers[current_teacher_index].parameters(), lr=learning_rate, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=args.nesterov)
         optimizer.load_state_dict(current_checkpoint['optimizer'])
-        lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
+        lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.teacher_epochs, eta_min=args.cosine_annealing_etamin)
         lr_scheduler.load_state_dict(current_checkpoint['scheduler'])
     
     if(not stage == 'student'):
-        for teacher_index in range(current_teacher_index, FLAGS['ensemble_size']):
-            print(f"training teacher {teacher_index}")
+        for teacher_index in range(current_teacher_index, args.ensemble_size):
+            xm.master_print(f"training teacher {teacher_index}")
             model = teachers[teacher_index]
             if(not teacher_index == current_teacher_index or not current_checkpoint):
-                optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=FLAGS['momentum'], weight_decay=FLAGS['weight_decay'], nesterov=FLAGS['nestrov'])
-                lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
+                optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=args.nesterov)
+                lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.teacher_epochs, eta_min=args.cosine_annealing_etamin)
             teacher_loss_fn = ClassifierTeacherLoss(model, device)
             records = []
             xm.master_print('<-- training begin -->')
@@ -164,16 +166,14 @@ def main(rank):
             eval_metrics = eval_epoch(model, test_loader, epoch=start_epoch, device=device, loss_fn=teacher_loss_fn)
             xm.master_print(f"initial eval metrics:", eval_metrics)
             records.append(eval_metrics)
-            for epoch in range(start_epoch, FLAGS['teacher_epochs']):
+            for epoch in range(start_epoch, args.teacher_epochs):
                 metrics = {}
                 train_metrics = supervised_epoch(model, train_loader, optimizer, lr_scheduler, device=device, epoch=epoch+1, loss_fn = teacher_loss_fn)
-                print('done with metrics')
                 metrics.update(train_metrics)
-                if((epoch + 1) % FLAGS['evaluation_frequency'] == 0):
+                if((epoch + 1) % args.evaluation_frequency == 0):
                     eval_metrics = eval_epoch(model, test_loader, device=device, epoch=epoch+1, loss_fn=teacher_loss_fn)
                     metrics.update(eval_metrics)
                 #saving checkpoint
-                print("saving checkpoint")
                 save_checkpoint(
                     stage=f'teacher{teacher_index}',
                     teachers=teachers,
@@ -185,11 +185,10 @@ def main(rank):
                 records.append(metrics)
                 xm.master_print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
             xm.rendezvous("finalize")
-    print("student stage")
     teacher = ClassifierEnsemble(*teachers)
     if xm.is_master_ordinal():
-        Platform.save_model(teachers[0].cpu().state_dict(), f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/final_single_teacher_model.pt")
-        Platform.save_model(teacher.cpu().state_dict(), f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/final_ensemble_model.pt")
+        Platform.save_model(teachers[0].cpu().state_dict(), f"gs://tianjin-distgen/nolan/{args.experiment_name}/final_single_teacher_model.pt")
+        Platform.save_model(teacher.cpu().state_dict(), f"gs://tianjin-distgen/nolan/{args.experiment_name}/final_ensemble_model.pt")
     teachers = [teacher.to(device) for teacher in teachers] 
     teacher.to(device)
     """
@@ -202,12 +201,10 @@ def main(rank):
           num_replicas=xm.xrt_world_size(),
           rank=xm.get_ordinal(),
           shuffle=True)
-    if FLAGS['permuted']:
-        distill_loader = PermutedDistillLoader(temp=4.0, batch_size=FLAGS['batch_size'], shuffle=True, drop_last=True, device=device, sampler=distill_sampler, num_workers=FLAGS['num_workers'], teacher=teacher, dataset=train_dataset)
+    if args.permuted:
+        distill_loader = PermutedDistillLoader(temp=4.0, batch_size=args.batch_size, shuffle=True, drop_last=True, device=device, sampler=distill_sampler, num_workers=args.num_workers, teacher=teacher, dataset=train_dataset)
     else:
-        distill_loader = DistillLoader(temp=4.0, batch_size=FLAGS['batch_size'], shuffle=True, drop_last=True, device = device, sampler=distill_sampler, num_workers=FLAGS['num_workers'], teacher=teacher, dataset=train_dataset)
-    print(list(teacher.state_dict().values())[0].device, "ENSEMBLE_DEVICE")
-    print(list(teacher.state_dict().keys())[0], "ENSEMBLE_DEVICE KEY")
+        distill_loader = DistillLoader(temp=4.0, batch_size=args.batch_size, shuffle=True, drop_last=True, device = device, sampler=distill_sampler, num_workers=args.num_workers, teacher=teacher, dataset=train_dataset)
     #teacher_train_metrics = eval_epoch(teacher, distill_loader, device=device, epoch=0,
                                                #loss_fn=ClassifierEnsembleLoss(teacher, device), isDistillation=True)
     #teacher_test_metrics = eval_epoch(teacher, test_loader, device=device, epoch=0,
@@ -217,10 +214,10 @@ def main(rank):
     Distilling Student Model
     ------------------------------------------------------------------------------------
     """
-    print('distilliing student model')
+    xm.master_print("Beginning distillation stage.")
     student = PreResnet(deptch=56).to(device)
-    optimizer = torch.optim.SGD(params= student.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
+    optimizer = torch.optim.SGD(params= student.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, momentum=args.momentum, nesterov=args.nesterov)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.teacher_epochs, eta_min=args.cosine_annealing_etamin)
     start_epoch = 0
     if(current_checkpoint and current_checkpoint['student']):
         student.load_state_dict(current_checkpoint['student'])
@@ -234,13 +231,12 @@ def main(rank):
     records = []
     eval_metrics = eval_epoch(student, test_loader, device=device, epoch=start_epoch, loss_fn=student_loss, teacher=teacher)
     records.append(eval_metrics)
-    for epoch in range(start_epoch, FLAGS['student_epochs']):
-      print("BEGIN DISTILL EPOCH", epoch)
+    for epoch in range(start_epoch, args.student_epochs):
       metrics = {}
       train_metrics = distillation_epoch(student, distill_loader, optimizer,
-                                            lr_scheduler, epoch=epoch + 1, loss_fn=student_loss, device=device, dataset=train_dataset, drop_last=True, sampler=distill_sampler, num_workers=FLAGS['num_workers'])
+                                            lr_scheduler, epoch=epoch + 1, loss_fn=student_loss, device=device, dataset=train_dataset, drop_last=True, sampler=distill_sampler, num_workers=args.num_workers)
       metrics.update(train_metrics)
-      if(epoch % FLAGS['evaluation_frequency'] == 0):
+      if(epoch % args.evaluation_frequency == 0):
         eval_metrics = eval_epoch(student, test_loader, device=device, epoch=epoch + 1, loss_fn=student_loss, teacher=teacher)
         metrics.update(eval_metrics)
         # save checkpoint
@@ -252,15 +248,18 @@ def main(rank):
             scheduler=lr_scheduler,
             optimizer=optimizer
         )
-        print("saved checkpoint")
         xm.master_print("student epoch: ", epoch, " metrics: ", metrics)
         records.append(metrics)    
     xm.master_print('done')
     if xm.is_master_ordinal():
-        Platform.save_model(student.cpu().state_dict(), f'gs://tianjin-distgen/nolan/{FLAGS[experiment_name]}/final_student.pt')
+        Platform.save_model(student.cpu().state_dict(), f'gs://tianjin-distgen/nolan/{args.experiment_name}/final_student.pt')
     xm.rendezvous("finalize")
 
 if __name__ == "__main__":
-    xmp.spawn(main, args=(), nprocs=8, start_method='fork')
+    from simple_parsing import ArgumentParser
+    parser = ArgumentParser()
+    parser.add_arguments(Options, dest="options")
+    args = parser.parse_args().options
+    xmp.spawn(main, args=[args], nprocs=8, start_method='fork')
 
 
