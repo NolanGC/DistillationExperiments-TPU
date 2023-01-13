@@ -114,18 +114,20 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     #else:
     #    ece = None
     metrics = dict(
-        test_loss=test_loss / xm.xrt_world_size() * len(loader),
+        test_loss=test_loss / (xm.xrt_world_size() * len(loader)),
         test_acc=100. * correct / total,
         #test_ece=ece,
-        test_nll=nll / xm.xrt_world_size() * len(loader),
+        test_nll=nll / (xm.xrt_world_size() * len(loader)),
         epoch=epoch,
+        total=total,
+        correct=correct,
     )
     # only return generalization metrics if there is no teacher
     if teacher is None:
         return metrics
 
     # add fidelity metrics
-    metrics.update(dict(test_ts_agree=100. * agree / total, test_ts_kl=kl / xm.xrt_world_size() * len(loader)))
+    metrics.update(dict(test_ts_agree=100. * agree / total, test_ts_kl=kl / (xm.xrt_world_size() * len(loader))))
     #if(cka is None):
     #    return metrics
     #if len(teacher.components) == 1 and hasattr(teacher.components[0], 'preacts') and with_cka:
