@@ -109,14 +109,14 @@ def main(rank, args):
           batch_size=args.batch_size,
           sampler=train_sampler,
           num_workers=args.num_workers,
-          drop_last=True)
+          drop_last=False)
     test_loader = torch.utils.data.DataLoader(
           test_dataset,
           batch_size=args.batch_size,
           sampler=test_sampler,
           shuffle=False,
           num_workers=args.num_workers,
-          drop_last=True)
+          drop_last=False)
     learning_rate = args.learning_rate
     device = xm.xla_device()
     current_checkpoint = None
