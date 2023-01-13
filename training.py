@@ -12,7 +12,7 @@ from utils import batch_calibration_stats, expected_calibration_err, reduce_ense
 def get_lr(lr_scheduler):
     return lr_scheduler.get_last_lr()[0]
 
-def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn):
+def supervised_epoch(net, loader, sampler, optimizer, lr_scheduler,device, epoch, loss_fn):
     """
     Train the network for one epoch.
     Inputs:
@@ -26,6 +26,7 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn
         metrics: a dictionary of metrics
     """
     net.train()
+    sampler.set_epoch(epoch)
     train_loss = torch.tensor(0.).to(device)
     correct = torch.tensor(0.).to(device)
     total = 0
@@ -114,14 +115,15 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     #else:
     #    ece = None
     metrics = dict(
-        test_loss=test_loss / (xm.xrt_world_size() * len(loader)),
-        test_acc=100. * correct / total,
+        test_loss=test_loss.cpu().item() / (xm.xrt_world_size() * len(loader)),
+        test_acc=100. * correct.cpu().item() / total.cpu().item(),
         #test_ece=ece,
-        test_nll=nll / (xm.xrt_world_size() * len(loader)),
+        test_nll=nll.cpu().item() / (xm.xrt_world_size() * len(loader)),
         epoch=epoch,
-        total=total,
-        correct=correct,
+        total=total.cpu().item(),
+        correct=correct.cpu().item(),
     )
+
     # only return generalization metrics if there is no teacher
     if teacher is None:
         return metrics
@@ -135,9 +137,10 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     #    metrics.update({f'test_cka_{i}': val for i, val in enumerate(cka)})
     return metrics
 
-def distillation_epoch(student, train_loader, optimizer, lr_scheduler, device, epoch,
+def distillation_epoch(student, train_loader, train_sampler, optimizer, lr_scheduler, device, epoch,
                        loss_fn, dataset=None, drop_last=True, sampler=None, num_workers =None):
     student.train()
+    train_sampler.set_epoch(epoch)
     train_loss = torch.tensor(0.).to(device)
     correct = torch.tensor(0.).to(device)
     agree = torch.tensor(0.).to(device)

@@ -61,7 +61,9 @@ class Options:
     experiment_name : str
 
 def load_object(path):
-    Platform.copyfile(f"gs://tianjin-distgen/nolan/{args.experiment_name}/" + path, 'temp_checkpointdl.pt')
+    if xm.is_master_ordinal():
+        Platform.copyfile(f"gs://tianjin-distgen/nolan/{args.experiment_name}/" + path, 'temp_checkpointdl.pt')
+    xm.rendezvous("file-download-sync")
     obj = xser.load('temp_checkpointdl.pt')
     return obj
 
@@ -169,7 +171,7 @@ def main(rank, args):
             records.append(eval_metrics)
             for epoch in range(start_epoch, args.teacher_epochs):
                 metrics = {}
-                train_metrics = supervised_epoch(model, train_loader, optimizer, lr_scheduler, device=device, epoch=epoch+1, loss_fn = teacher_loss_fn)
+                train_metrics = supervised_epoch(model, train_loader, train_sampler, optimizer, lr_scheduler, device=device, epoch=epoch+1, loss_fn = teacher_loss_fn)
                 metrics.update(train_metrics)
                 if((epoch + 1) % args.evaluation_frequency == 0):
                     eval_metrics = eval_epoch(model, test_loader, device=device, epoch=epoch+1, loss_fn=teacher_loss_fn)
@@ -240,7 +242,7 @@ def main(rank, args):
     records.append(eval_metrics)
     for epoch in range(start_epoch, args.student_epochs):
       metrics = {}
-      train_metrics = distillation_epoch(student, distill_loader, optimizer,
+      train_metrics = distillation_epoch(student, distill_loader, distill_sampler, optimizer,
                                             lr_scheduler, epoch=epoch + 1, loss_fn=student_loss, device=device, dataset=train_dataset, drop_last=True, sampler=distill_sampler, num_workers=args.num_workers)
       metrics.update(train_metrics)
       if(epoch % args.evaluation_frequency == 0):
@@ -251,7 +253,7 @@ def main(rank, args):
             stage='student',
             teachers=teachers,
             student=student,
-            epoch=epoch,
+            epoch=epoch+1,
             scheduler=lr_scheduler,
             optimizer=optimizer
         )
