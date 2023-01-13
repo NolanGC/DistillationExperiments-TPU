@@ -149,7 +149,7 @@ def distillation_epoch(student, train_loader, optimizer, lr_scheduler, device, e
     train_loader.loader = train_loader._make_loader(dataset, drop_last, sampler, num_workers)
     for batch_idx, (inputs, targets, teacher_logits, temp) in enumerate(train_loader):
         if (batch_idx + 1) % 10 == 0:
-            xm.master_print(f"distill {batch_idx}/{len(train_loader)}")
+            xm.master_print(f"distill ep{epoch} {batch_idx}/{len(train_loader)}")
         optimizer.zero_grad()
         loss, student_logits = loss_fn(inputs, targets, teacher_logits, temp)
         loss.backward()
