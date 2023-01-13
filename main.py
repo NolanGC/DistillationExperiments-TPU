@@ -41,8 +41,6 @@ dataset_dir = 'data/datasets'
 #                               experiment flags                               #
 # ---------------------------------------------------------------------------- #
 
-
-
 FLAGS = {}
 FLAGS['batch_size'] = 16
 FLAGS['num_workers'] = 8 #TODO from XLA example, verify this number is optimal
@@ -57,7 +55,6 @@ FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
 FLAGS['permuted'] = False
 FLAGS['experiment_name'] = "permuted_run_fullrun1"
-
 
 def load_object(path):
     print(f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/" + path)
@@ -117,7 +114,7 @@ def main(rank):
           shuffle=False,
           num_workers=FLAGS['num_workers'],
           drop_last=True)
-    learning_rate = FLAGS['learning_rate'] * xm.xrt_world_size()
+    learning_rate = FLAGS['learning_rate']
     device = xm.xla_device()
     current_checkpoint = None
 
@@ -187,7 +184,6 @@ def main(rank):
                 )
                 records.append(metrics)
                 xm.master_print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
-            teachers.append(model)
             xm.rendezvous("finalize")
     print("student stage")
     teacher = ClassifierEnsemble(*teachers)
@@ -226,11 +222,11 @@ def main(rank):
     optimizer = torch.optim.SGD(params= student.parameters(), lr=FLAGS['learning_rate'], weight_decay=FLAGS['weight_decay'], momentum=FLAGS['momentum'], nesterov=FLAGS['nestrov'])
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=FLAGS['teacher_epochs'], eta_min=FLAGS['cosine_annealing_etamin'])
     start_epoch = 0
-
     if(current_checkpoint and current_checkpoint['student']):
         student.load_state_dict(current_checkpoint['student'])
     if(current_checkpoint):
-        start_epoch = current_checkpoint['epoch']
+        if(current_checkpoint['stage'] == 'student'):
+            start_epoch = current_checkpoint['epoch']
         lr_scheduler.load_state_dict(current_checkpoint['scheduler'])
         optimizer.load_state_dict(current_checkpoint['optimizer'])
     student_base_loss = TeacherStudentFwdCrossEntLoss()
