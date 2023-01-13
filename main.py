@@ -54,7 +54,7 @@ FLAGS['ensemble_size'] = 3
 FLAGS['cosine_annealing_etamin'] = 1e-6
 FLAGS['evaluation_frequency'] = 10 # every 10 epochs
 FLAGS['permuted'] = False
-FLAGS['experiment_name'] = "permuted_run_fullrun1"
+FLAGS['experiment_name'] = "permuted_run_fullrun2"
 
 def load_object(path):
     print(f"gs://tianjin-distgen/nolan/{FLAGS['experiment_name']}/" + path)
