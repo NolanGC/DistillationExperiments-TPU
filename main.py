@@ -128,7 +128,7 @@ def main(rank, args):
         xm.master_print("LOADED CHECKPOINT", current_checkpoint['stage'], current_checkpoint['epoch'])
     else:
         current_checkpoint = None
-    
+
     if(current_checkpoint):
         stage = current_checkpoint['stage']
 
@@ -149,7 +149,7 @@ def main(rank, args):
         optimizer.load_state_dict(current_checkpoint['optimizer'])
         lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.teacher_epochs, eta_min=args.cosine_annealing_etamin)
         lr_scheduler.load_state_dict(current_checkpoint['scheduler'])
-    
+
     if(not stage == 'student'):
         for teacher_index in range(current_teacher_index, args.ensemble_size):
             xm.master_print(f"training teacher {teacher_index}")
@@ -189,7 +189,7 @@ def main(rank, args):
     if xm.is_master_ordinal():
         Platform.save_model(teachers[0].cpu().state_dict(), f"gs://tianjin-distgen/nolan/{args.experiment_name}/final_single_teacher_model.pt")
         Platform.save_model(teacher.cpu().state_dict(), f"gs://tianjin-distgen/nolan/{args.experiment_name}/final_ensemble_model.pt")
-    teachers = [teacher.to(device) for teacher in teachers] 
+    teachers = [teacher.to(device) for teacher in teachers]
     teacher.to(device)
     """
     ------------------------------------------------------------------------------------
@@ -249,10 +249,12 @@ def main(rank, args):
             optimizer=optimizer
         )
         xm.master_print("student epoch: ", epoch, " metrics: ", metrics)
-        records.append(metrics)    
+        records.append(metrics)
+    final_eval_metrics = eval_epoch(student, test_loader, device=device, epoch=epoch + 1, loss_fn=student_loss, teacher=teacher)
     xm.master_print('done')
     if xm.is_master_ordinal():
         Platform.save_model(student.cpu().state_dict(), f'gs://tianjin-distgen/nolan/{args.experiment_name}/final_student.pt')
+        Platform.save_model(final_eval_metrics, f'gs://tianjin-distgen/nolan/{args.experiment_name}/final_student_metric.pt')
     xm.rendezvous("finalize")
 
 if __name__ == "__main__":
