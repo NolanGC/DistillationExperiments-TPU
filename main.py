@@ -45,6 +45,7 @@ dataset_dir = 'data/datasets'
 
 @dataclass
 class Options:
+    temperature : int
     batch_size : int
     num_workers : int
     learning_rate : float
@@ -202,9 +203,9 @@ def main(rank, args):
           rank=xm.get_ordinal(),
           shuffle=True)
     if args.permuted:
-        distill_loader = PermutedDistillLoader(temp=4.0, batch_size=args.batch_size, shuffle=True, drop_last=True, device=device, sampler=distill_sampler, num_workers=args.num_workers, teacher=teacher, dataset=train_dataset)
+        distill_loader = PermutedDistillLoader(temp=args.temperature, batch_size=args.batch_size, shuffle=True, drop_last=True, device=device, sampler=distill_sampler, num_workers=args.num_workers, teacher=teacher, dataset=train_dataset)
     else:
-        distill_loader = DistillLoader(temp=4.0, batch_size=args.batch_size, shuffle=True, drop_last=True, device = device, sampler=distill_sampler, num_workers=args.num_workers, teacher=teacher, dataset=train_dataset)
+        distill_loader = DistillLoader(temp=args.temperature, batch_size=args.batch_size, shuffle=True, drop_last=True, device = device, sampler=distill_sampler, num_workers=args.num_workers, teacher=teacher, dataset=train_dataset)
     #teacher_train_metrics = eval_epoch(teacher, distill_loader, device=device, epoch=0,
                                                #loss_fn=ClassifierEnsembleLoss(teacher, device), isDistillation=True)
     #teacher_test_metrics = eval_epoch(teacher, test_loader, device=device, epoch=0,

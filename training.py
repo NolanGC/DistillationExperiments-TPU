@@ -50,7 +50,6 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn
         )
     return metrics
 
-
 def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=True, isDistillation=False):
     """
     Evaluate the model on the test set.
