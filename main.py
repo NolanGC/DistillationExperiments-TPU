@@ -224,7 +224,7 @@ def main(rank, args):
     xm.master_print("Beginning distillation stage.")
     student = PreResnet(deptch=56).to(device)
     optimizer = torch.optim.SGD(params= student.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, momentum=args.momentum, nesterov=args.nesterov)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.teacher_epochs, eta_min=args.cosine_annealing_etamin)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.student_epochs, eta_min=args.cosine_annealing_etamin)
     start_epoch = 0
     if(current_checkpoint and current_checkpoint['student']):
         student.load_state_dict(current_checkpoint['student'])
