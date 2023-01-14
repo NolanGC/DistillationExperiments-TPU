@@ -23,6 +23,7 @@ import glob
 import logging
 import os
 import random
+import math
 
 import numpy as np
 import torch_xla
@@ -44,6 +45,40 @@ import perm_utils
 
 from transformers import AdamW, get_linear_schedule_with_warmup
 from transformers import WEIGHTS_NAME, BertConfig, BertForTokenClassification, BertTokenizer
+
+def reduce_ensemble_logits(teacher_logits):
+    assert teacher_logits.dim() == 4
+    teacher_logits = F.log_softmax(teacher_logits, dim=-1)
+    n_teachers = teacher_logits.size(2)
+    return torch.logsumexp(teacher_logits, dim=2) - math.log(n_teachers)
+
+class ClassifierEnsemble(torch.nn.Module):
+    def __init__(self, *models):
+        super().__init__()
+        self.components = torch.nn.ModuleList(models)
+        self.device = xm.xla_device()
+
+    def forward(self, *args, **kwargs):
+        """[batch_size x seq x num_components x ...]"""
+
+        all_loss = []
+        all_logits = []
+        for model in self.components:
+            output = model(*args, **kwargs)
+            assert len(output.keys()) == 2
+            all_loss.append(output['loss'])
+            all_logits.append(output['logits'])
+            # stacked_output.append(model(*args, **kwargs))
+
+        stacked_logits = torch.stack(all_logits, dim=2)
+        ensemble_output = {
+            "loss":torch.mean(torch.stack(all_loss)),
+            "logits":reduce_ensemble_logits(stacked_logits),
+            "hidden_states":None,
+            "attentions":None,
+        }
+
+        return [ensemble_output["loss"], ensemble_output["logits"]]
 
 class MyDataset(Dataset):
     def __init__(self,all_input_ids, all_input_mask, all_segment_ids, all_labels):
@@ -88,6 +123,7 @@ class TPUGeneralDistiller(GeneralDistiller):
         #                 'loss': loss, 'weight': weight},...]
         super(TPUGeneralDistiller, self).__init__(train_config, distill_config, model_T, model_S, adaptor_T, adaptor_S)
         self.permute_logits = permute_logits
+        self.sampler = sampler
 
     def train_with_num_epochs(self, optimizer, scheduler, tqdm_disable, dataloader, max_grad_norm, num_epochs, callback, batch_postprocessor, **args):
         device = xm.xla_device()
@@ -457,7 +493,7 @@ def load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, mode):
 
     # Load data features from cache or dataset file
     cached_features_file = os.path.join(args.data_dir, "cached_{}_{}_{}".format(mode,
-        list(filter(None, args.model_name_or_path.split("/"))).pop(),
+        list(filter(None, args.model_name_or_path_student)).pop(),
         str(args.max_seq_length)))
     if os.path.exists(cached_features_file) and not args.overwrite_cache:
         logger.info("Loading features from cached file %s", cached_features_file)
@@ -523,46 +559,48 @@ def _mp_fn(index, args):
     config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
 
     if xm.is_master_ordinal():
-        if Platform.exists(args.model_name_or_path):
-            teacher_dir = os.path.join(os.getcwd(), os.path.basename(args.model_name_or_path))
-            Platform.copytree(args.model_name_or_path, teacher_dir)
-            logger.info(f"Models downloaded from GCP Bucket to {teacher_dir}.")
-            args.model_name_or_path = teacher_dir
-        else:
-            print("Cannot find teacher directory.")
-            exit(1)
+        teacher_dirs = []
+        gs_teacher_dirs = args.model_name_or_paths.split(",")
+        for gs_teacher_dir in gs_teacher_dirs:
+            print(gs_teacher_dir)
+            if Platform.exists(gs_teacher_dir):
+                teacher_dir = os.path.join(os.getcwd(), os.path.basename(gs_teacher_dir))
+                Platform.copytree(gs_teacher_dir, teacher_dir)
+                logger.info(f"Models downloaded from GCP Bucket to {teacher_dir}.")
+                teacher_dirs.append(teacher_dir)
+            else:
+                print("Cannot find teacher directory.")
+                exit(1)
 
-    xm.rendezvous("Teacher model downloading.")
-    config = config_class.from_pretrained(teacher_dir,
-                                          num_labels=num_labels,
-                                          cache_dir=args.cache_dir if args.cache_dir else None)
-    tokenizer = tokenizer_class.from_pretrained(teacher_dir,
-                                                do_lower_case=args.do_lower_case,
-                                                cache_dir=args.cache_dir if args.cache_dir else None)
-    model_T = model_class.from_pretrained(teacher_dir,
-                                        from_tf=bool(".ckpt" in args.model_name_or_path),
-                                        config=config,
-                                        cache_dir=args.cache_dir if args.cache_dir else None)
-    if args.model_name_or_path_student != None:
-        config = config_class.from_pretrained(args.config_name if args.config_name else args.model_name_or_path_student,
+    xm.rendezvous("download-teacher")
+
+    all_model_T = []
+    for teacher_dir in teacher_dirs:
+        config = config_class.from_pretrained(teacher_dir,
                                               num_labels=num_labels,
                                               cache_dir=args.cache_dir if args.cache_dir else None)
-        config.num_hidden_layers=args.num_hidden_layers
-        model = model_class.from_pretrained(args.model_name_or_path_student,
-                                        from_tf=bool(".ckpt" in args.model_name_or_path),
-                                        config=config,
-                                        cache_dir=args.cache_dir if args.cache_dir else None)
-    else:
-        config = config_class.from_pretrained(args.config_name if args.config_name else teacher_dir,
-                                          num_labels=num_labels,
-                                          cache_dir=args.cache_dir if args.cache_dir else None)
-        config.num_hidden_layers=args.num_hidden_layers
-        model = model_class.from_pretrained(teacher_dir,
-                                        from_tf=bool(".ckpt" in args.model_name_or_path),
-                                        config=config,
-                                        cache_dir=args.cache_dir if args.cache_dir else None)
+        tokenizer = tokenizer_class.from_pretrained(teacher_dir,
+                                                    do_lower_case=args.do_lower_case,
+                                                    cache_dir=args.cache_dir if args.cache_dir else None)
+        model_T = model_class.from_pretrained(teacher_dir,
+                                            from_tf=False,
+                                            config=config,
+                                            cache_dir=args.cache_dir if args.cache_dir else None)
+        all_model_T.append(model_T)
+    model_T = ClassifierEnsemble(*all_model_T)
+    logger.info("Teacher ensemble loaded & ready.")
 
+    assert args.model_name_or_path_student is not None, "need student path"
+    config = config_class.from_pretrained(args.model_name_or_path_student,
+                                      num_labels=num_labels,
+                                      cache_dir=args.cache_dir if args.cache_dir else None)
+    config.num_hidden_layers=args.num_hidden_layers
+    model = model_class.from_pretrained(args.model_name_or_path_student,
+                                    from_tf=False,
+                                    config=config,
+                                    cache_dir=args.cache_dir if args.cache_dir else None)
 
+    logger.info("Student model loaded & ready.")
     if xm.is_master_ordinal():
         xm.rendezvous("dataset_collection")
 
@@ -584,7 +622,7 @@ def _mp_fn(index, args):
         config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
         # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
         pad_token_label_id = CrossEntropyLoss().ignore_index
-        tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path, do_lower_case=args.do_lower_case)
+        tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path_student, do_lower_case=args.do_lower_case)
         evaluate(args, model, tokenizer, labels, pad_token_label_id, mode="test")
         model.train()
 
@@ -642,7 +680,7 @@ class Options:
     temperature : int
     data_dir : str
     model_type : str
-    model_name_or_path : str
+    model_name_or_paths : str
     output_dir : str
     num_hidden_layers : int
     nprocs : int
