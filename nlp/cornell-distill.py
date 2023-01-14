@@ -82,6 +82,7 @@ class TPUGeneralDistiller(GeneralDistiller):
              adaptor_T,
              adaptor_S,
              permute_logits,
+             sampler,
              custom_matches = None):
         # custom_matches=[{'module_T': module_T, 'module_S':module_S,
         #                 'loss': loss, 'weight': weight},...]
@@ -105,9 +106,7 @@ class TPUGeneralDistiller(GeneralDistiller):
                 self.cache_logits(batch, args, batch_postprocessor)
 
         for current_epoch in range(int(num_epochs)):
-            if self.local_rank != -1 and hasattr(dataloader,'sampler'):
-                print("set epoch")
-                dataloader.sampler.set_epoch(current_epoch)  #In distributed mode, calling the set_epoch method is needed to make shuffling work;
+            self.sampler.set_epoch(current_epoch)
             optimizer.zero_grad()
             if self.d_config.is_caching_logits:
                 random.shuffle(self.logits_cache)
@@ -359,7 +358,8 @@ def train(args, train_dataset,model_T, model, tokenizer, labels, pad_token_label
 
         distiller=TPUGeneralDistiller(train_config,distill_config,
             model_T,model,adaptor_T,adaptor_S,
-            permute_logits=args.permute_logits)
+            permute_logits=args.permute_logits,
+            sampler=train_sampler)
         distiller.train(optimizer,train_dataloader,args.num_train_epochs,
                         scheduler_class=scheduler_class, scheduler_args=scheduler_args,
                         max_grad_norm=1.0, callback=predict_callback)

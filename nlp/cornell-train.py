@@ -71,7 +71,7 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id,pred
         num_replicas=xm.xrt_world_size(),
         rank=xm.get_ordinal(),
         shuffle=True,
-        seed=42)
+        seed=args.seed)
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -111,6 +111,7 @@ def train(args, train_dataset, model, tokenizer, labels, pad_token_label_id,pred
     device = xm.xla_device()
 
     for epoch in train_iterator:
+        train_sampler.set_epoch(epoch)
         xm.master_print("new epoch")
         para_train_dataloader = pl.ParallelLoader(
             train_dataloader, [device]).per_device_loader(device)
