@@ -233,8 +233,8 @@ def main(rank, args):
     if(current_checkpoint):
         if(current_checkpoint['stage'] == 'student'):
             start_epoch = current_checkpoint['epoch']
-        lr_scheduler.load_state_dict(current_checkpoint['scheduler'])
-        optimizer.load_state_dict(current_checkpoint['optimizer'])
+            lr_scheduler.load_state_dict(current_checkpoint['scheduler'])
+            optimizer.load_state_dict(current_checkpoint['optimizer'])
     student_base_loss = TeacherStudentFwdCrossEntLoss()
     student_loss = ClassifierStudentLoss(student, student_base_loss, alpha=0.0, device=device) # alpha is set to zero
     records = []
