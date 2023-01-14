@@ -188,15 +188,24 @@ def main(rank, args):
             xm.master_print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
     xm.rendezvous("finalize")
 
+    xm.master_print("Single teacher evaluation.")
+    single_teacher_metrics = eval_epoch(teachers[0], test_loader, device=device, epoch=0,
+                                        loss_fn=teacher_loss_fn)
+
     teacher = ClassifierEnsemble(*teachers)
     xm.master_print("Teacher evaluation.")
     teacher_metrics = eval_epoch(teacher, test_loader, device=device, epoch=0,
                                  loss_fn=ClassifierEnsembleLoss(teacher, device))
 
-    if xm.is_master_ordinal():
-        Platform.save_model(teachers[0].cpu().state_dict(), f"gs://tianjin-distgen/nolan/{args.experiment_name}/final_single_teacher_model.pt")
-        Platform.save_model(teacher.cpu().state_dict(), f"gs://tianjin-distgen/nolan/{args.experiment_name}/final_ensemble_model.pt")
-        Platform.save_model(teacher_metrics, f"gs://tianjin-distgen/nolan/{args.experiment_name}/final_ensemble_metric.pt")
+    xm.master_print("Completed teacher evaluation.")
+    xm.rendezvous("finalize-teacher-eval")
+
+    xm.master_print("Saving models.")
+    Platform.save_model(teachers[0].cpu().state_dict(), f"gs://tianjin-distgen/nolan/{args.experiment_name}/final_single_teacher_model.pt")
+    Platform.save_model(teacher.cpu().state_dict(), f"gs://tianjin-distgen/nolan/{args.experiment_name}/final_ensemble_model.pt")
+    Platform.save_model(single_teacher_metrics, f"gs://tianjin-distgen/nolan/{args.experiment_name}/final_single_teacher_metric.pt")
+    Platform.save_model(teacher_metrics, f"gs://tianjin-distgen/nolan/{args.experiment_name}/final_ensemble_metric.pt")
+    xm.master_print("Completed saving models.")
 
     teachers = [teacher.to(device) for teacher in teachers]
     teacher.to(device)
@@ -262,9 +271,8 @@ def main(rank, args):
     xm.master_print("Final student evaluation.")
     final_eval_metrics = eval_epoch(student, test_loader, device=device, epoch=epoch, loss_fn=student_loss, teacher=teacher)
     xm.master_print('done')
-    if xm.is_master_ordinal():
-        Platform.save_model(student.cpu().state_dict(), f'gs://tianjin-distgen/nolan/{args.experiment_name}/final_student.pt')
-        Platform.save_model(final_eval_metrics, f'gs://tianjin-distgen/nolan/{args.experiment_name}/final_student_metric.pt')
+    Platform.save_model(student.cpu().state_dict(), f'gs://tianjin-distgen/nolan/{args.experiment_name}/final_student.pt')
+    Platform.save_model(final_eval_metrics, f'gs://tianjin-distgen/nolan/{args.experiment_name}/final_student_metric.pt')
 
     xm.rendezvous("finalize-distillation")
 

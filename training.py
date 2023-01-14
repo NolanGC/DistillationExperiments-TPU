@@ -77,6 +77,7 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
         para_loader = loader
     else:
         para_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device)
+
     for batch_idx, batch in enumerate(para_loader):
         if (batch_idx + 1) % 10 == 0:
             xm.master_print(f"eval {batch_idx}/{len(loader)}")
@@ -99,15 +100,16 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
             if teacher is not None:
                 teacher_predicted = teacher_logits.argmax(-1)
                 agree += predicted.eq(teacher_predicted).sum()
-                kl += kl_divergence(
-                    Categorical(logits=teacher_logits),
-                    Categorical(logits=logits)
-                ).mean()
+                # kl += kl_divergence(
+                #     Categorical(logits=teacher_logits),
+                #     Categorical(logits=logits)
+                # ).mean()
             #batch_ece_stats = batch_calibration_stats(logits, targets, num_bins=10)
             #ece_stats = batch_ece_stats if ece_stats is None else [
             #    t1 + t2 for t1, t2 in zip(ece_stats, batch_ece_stats)
             #]
             xm.mark_step()
+
     total, correct, test_loss, kl, nll = xm.all_reduce(xm.REDUCE_SUM, [total, correct, test_loss, kl, nll])
     xm.mark_step()
     #if(not ece_stats is None):
@@ -117,7 +119,6 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     metrics = dict(
         test_loss=test_loss.cpu().item() / (xm.xrt_world_size() * len(loader)),
         test_acc=100. * correct.cpu().item() / total.cpu().item(),
-        #test_ece=ece,
         test_nll=nll.cpu().item() / (xm.xrt_world_size() * len(loader)),
         epoch=epoch,
         total=total.cpu().item(),
