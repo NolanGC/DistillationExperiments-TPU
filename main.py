@@ -24,7 +24,7 @@ from dataclasses import dataclass
 #                                module imports                                #
 # ---------------------------------------------------------------------------- #
 from models import PreResnet, ClassifierEnsemble
-from dataloaders import DistillLoader, PermutedDistillLoader
+from dataloaders import DistillLoader, PermutedDistillLoader, UniformDistillLoader
 from data import get_dataset
 from lossfns import ClassifierTeacherLoss, ClassifierEnsembleLoss, TeacherStudentFwdCrossEntLoss, ClassifierStudentLoss
 from training import eval_epoch, supervised_epoch, distillation_epoch
@@ -59,6 +59,7 @@ class Options:
     evaluation_frequency : int
     permuted : bool
     experiment_name : str
+    uniform : bool = False
 
 def load_object(path):
     Platform.copyfile(f"gs://tianjin-distgen/nolan/{args.experiment_name}/" + path, 'temp_checkpointdl.pt')
@@ -211,6 +212,8 @@ def main(rank, args):
           shuffle=True)
     if args.permuted:
         distill_loader = PermutedDistillLoader(temp=args.temperature, batch_size=args.batch_size, shuffle=True, drop_last=True, device=device, sampler=distill_sampler, num_workers=args.num_workers, teacher=teacher, dataset=train_dataset)
+    elif(args.uniform):
+        distill_loader = UniformDistillLoader(temp=args.temperature, batch_size=args.batch_size, shuffle=True, drop_last=True, device=device, sampler=distill_sampler, num_workers=args.num_workers, teacher=teacher, dataset=train_dataset)
     else:
         distill_loader = DistillLoader(temp=args.temperature, batch_size=args.batch_size, shuffle=True, drop_last=True, device = device, sampler=distill_sampler, num_workers=args.num_workers, teacher=teacher, dataset=train_dataset)
     #teacher_train_metrics = eval_epoch(teacher, distill_loader, device=device, epoch=0,
