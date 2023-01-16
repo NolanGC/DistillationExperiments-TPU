@@ -32,19 +32,12 @@ from fileutil import Platform
 # ---------------------------------------------------------------------------- #
 #                                   CLI args                                   #
 # ---------------------------------------------------------------------------- #
-#parser = argparse.ArgumentParser()
-#parser.add_argument('--permuted', action='store_true', help='permuted argument')
-#parser.add_argument('--loadTeachers', action='store_true', help='load teachers from state dict argument')
-#parser.add_argument("-d", "--directory", required=True, help="directory path")
-#args = parser.parse_args()
 dataset_dir = 'data/datasets'
 gcp_root = 'gs://tianjin-distgen/nolan/'
 
-#output_dir = args.directory
 # ---------------------------------------------------------------------------- #
 #                               experiment flags                               #
 # ---------------------------------------------------------------------------- #
-
 @dataclass
 class Options:
     temperature : int
@@ -62,32 +55,8 @@ class Options:
     permuted : bool
     experiment_name : str
 
-# def load_object(obj):
-#     if xm.is_master_ordinal():
-#         Platform.copyfile(os.path.join(gcp_root, args.experiment_name, obj), obj)
-#     xm.rendezvous("file-download-sync")
-#     return xser.load(obj)
-
-# def save_checkpoint(stage, teachers, student, epoch, scheduler, optimizer):
-#     """
-#     Saves the program checkpoint including the following parameters:
-#     Stage (string) : represents the current stage of the program, either 'teacher0', 'teacher1', 'teacher2' or 'student'
-#     Teachers (list) : list of the teacher models state_dictionary
-#     Student (model) : student model state_dictionary
-#     Epoch (int) : the current epoch of the program
-#     Optimizer (optimizer) : the optimizer state_dictionary
-#     """
-#     checkpoint_object = {
-#         'stage': stage,
-#         'teachers': [teacher.state_dict() for teacher in teachers],
-#         'student': student.state_dict() if student else None,
-#         'epoch': epoch,
-#         'scheduler': scheduler.state_dict(),
-#         'optimizer': optimizer.state_dict()
-#     }
-#     xm.save(checkpoint_object, 'checkpoint.pt')
-#     if(xm.is_master_ordinal()):
-#         Platform.copyfile('checkpoint.pt', f"gs://tianjin-distgen/nolan/{args.experiment_name}/checkpoint.pt")
+    # Apply early stopping to teacher.
+    early_stop_epoch : int = 999999999
 
 def main(rank, args):
     SERIAL_EXEC = xmp.MpSerialExecutor()
@@ -120,34 +89,6 @@ def main(rank, args):
     device = xm.xla_device()
 
     teachers = [PreResnet(depth=56).to(device) for i in range(args.ensemble_size)]
-    # current_teacher_index = 0
-    # if(Platform.exists(f"gs://tianjin-distgen/nolan/{args.experiment_name}/checkpoint.pt")):
-    #     current_checkpoint = load_object("checkpoint.pt")
-    #     xm.master_print("LOADED CHECKPOINT", current_checkpoint['stage'], current_checkpoint['epoch'])
-    # else:
-    #     current_checkpoint = None
-
-    # if(current_checkpoint):
-    #     stage = current_checkpoint['stage']
-
-    #     if(stage == 'teacher0'):
-    #         current_teacher_index = 0
-    #         teachers[0].load_state_dict(current_checkpoint['teachers'][0])
-    #     elif(stage == 'teacher1'):
-    #         current_teacher_index = 1
-    #         teachers[0].load_state_dict(current_checkpoint['teachers'][0])
-    #         teachers[1].load_state_dict(current_checkpoint['teachers'][1])
-    #     elif(stage == 'teacher2'):
-    #         current_teacher_index = 2
-    #         teachers[0].load_state_dict(current_checkpoint['teachers'][0])
-    #         teachers[1].load_state_dict(current_checkpoint['teachers'][1])
-    #         teachers[2].load_state_dict(current_checkpoint['teachers'][2])
-
-    #     optimizer = optim.SGD(teachers[current_teacher_index].parameters(), lr=learning_rate, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=args.nesterov)
-    #     optimizer.load_state_dict(current_checkpoint['optimizer'])
-    #     lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.teacher_epochs, eta_min=args.cosine_annealing_etamin)
-    #     lr_scheduler.load_state_dict(current_checkpoint['scheduler'])
-
     for teacher_index in range(0, args.ensemble_size):
         xm.master_print(f"training teacher {teacher_index}")
         model = teachers[teacher_index]
@@ -168,9 +109,9 @@ def main(rank, args):
         eval_metrics = eval_epoch(model, test_loader, epoch=start_epoch, device=device, loss_fn=teacher_loss_fn)
         xm.master_print(f"initial eval metrics:", eval_metrics)
         records.append(eval_metrics)
-        for epoch in range(start_epoch, args.teacher_epochs):
+        for epoch in range(start_epoch, min(args.early_stop_epoch, args.teacher_epochs)):
             metrics = {}
-            train_metrics = supervised_epoch(model, train_loader, train_sampler, optimizer, lr_scheduler, 
+            train_metrics = supervised_epoch(model, train_loader, train_sampler, optimizer, lr_scheduler,
                 device=device, epoch=epoch, loss_fn = teacher_loss_fn)
             metrics.update(train_metrics)
             if ((epoch + 1) % args.evaluation_frequency == 0):
