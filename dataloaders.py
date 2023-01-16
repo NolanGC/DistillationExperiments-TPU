@@ -74,17 +74,17 @@ class UniformDistillLoader(DistillLoader):
                 num_classes = teacher_logits.shape[1]
 
                 # Create one-hot mask
-                mask = torch.zeros(batch_size, num_classes).to(self.device)
-                mask.scatter_(1, targets[:, None], 1)
+                mask = torch.one_hot(targets, num_classes).to(self.device)
 
                 # Multiply mask with teacher_logits
                 logit_of_correct_class = (mask * teacher_logits).sum(dim=1)
 
                 # Create uniform logits
                 uniform_logits = (1 - logit_of_correct_class[:, None]) / (num_classes - 1)
-                uniform_logits.scatter_(1, targets[:, None], logit_of_correct_class)
+                uniform_logits = uniform_logits * (1 - mask) + logit_of_correct_class[:, None] * mask
                 uniform_logits.to(self.device)
             temp = torch.cat([
                 torch.ones(batch_size, 1) * self.temp
             ])
-            yield inputs, targets, uniform_logits, temp 
+            yield inputs, targets, uniform_logits, temp
+
