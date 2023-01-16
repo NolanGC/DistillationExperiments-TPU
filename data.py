@@ -9,23 +9,30 @@ def get_dataset():
     max_vals = (1.0,1.0,1.0)
     offset = [0.5 * (min_val + max_val) for min_val, max_val in zip(min_vals, max_vals)]
     scale = [(max_val - min_val) / 2 for max_val, min_val in zip(max_vals, min_vals)]
-        
-    transforms = torchvision.transforms.Compose(
+
+    train_transforms = torchvision.transforms.Compose(
         [
             ToTensor(),
             Normalize(offset, scale),
             RandomHorizontalFlip(p=0.5),
             RandomCrop(size=32, padding=4),
-            
+
+        ]
+    )
+
+    test_transforms = torchvision.transforms.Compose(
+        [
+            ToTensor(),
+            Normalize(offset, scale),
         ]
     )
 
     if not xm.is_master_ordinal():
         xm.rendezvous('download_only_once')
 
-    train_dataset = torchvision.datasets.CIFAR100(root=dataset_dir, train=True, download=True, transform=transforms)
-    test_dataset = torchvision.datasets.CIFAR100(root=dataset_dir, train=False, download=True, transform=transforms)
-    
+    train_dataset = torchvision.datasets.CIFAR100(root=dataset_dir, train=True, download=True, transform=train_transforms)
+    test_dataset = torchvision.datasets.CIFAR100(root=dataset_dir, train=False, download=True, transform=test_transforms)
+
     if xm.is_master_ordinal():
         xm.rendezvous('download_only_once')
 

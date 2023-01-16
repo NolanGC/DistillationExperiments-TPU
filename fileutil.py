@@ -3,6 +3,7 @@ import os
 import pathlib
 import torch
 import shutil
+import torch_xla.utils.serialization as xser
 
 try:
     import tensorflow as tf
@@ -61,15 +62,18 @@ class Platform:
 
     @staticmethod
     def save_model(model, path, *args, **kwargs):
-        Platform._clean()
+        if xm.is_master_ordinal():
+            Platform._clean()
 
-        dir, prefix = '.tmp', 'gcp-transfer'
-        if not Platform.exists(dir): Platform.makedirs(dir)
-        tmp = tempfile.mkstemp(dir=dir, prefix=prefix)[1]
-        torch.save(model, tmp, *args, **kwargs)
-        tf.io.gfile.copy(tmp, path, overwrite=True)
+            dir, prefix = '.tmp', 'gcp-transfer'
+            if not Platform.exists(dir): Platform.makedirs(dir)
+            tmp = tempfile.mkstemp(dir=dir, prefix=prefix)[1]
 
-        Platform.rmtree(tmp)
+        xm.save(model, tmp if xm.is_master_ordinal() else "", *args, **kwargs)
+
+        if xm.is_master_ordinal():
+            tf.io.gfile.copy(tmp, path, overwrite=True)
+            Platform.rmtree(tmp)
 
     @staticmethod
     def load_model(path, primary_process_only=False, *args, **kwargs):
@@ -83,7 +87,7 @@ class Platform:
         xm.rendezvous('platforms.gcp.load_model.1')
         rank_file = os.path.join(dir, prefix + str(xm.get_ordinal()))
         shutil.copyfile(master_file, rank_file)
-        m = torch.load(rank_file, *args, **kwargs)
+        m = xser.load(rank_file, *args, **kwargs)
         xm.rendezvous('platforms.gcp.load_model.2')
 
         return m

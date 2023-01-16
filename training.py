@@ -12,7 +12,7 @@ from utils import batch_calibration_stats, expected_calibration_err, reduce_ense
 def get_lr(lr_scheduler):
     return lr_scheduler.get_last_lr()[0]
 
-def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn):
+def supervised_epoch(net, loader, sampler, optimizer, lr_scheduler,device, epoch, loss_fn):
     """
     Train the network for one epoch.
     Inputs:
@@ -26,12 +26,14 @@ def supervised_epoch(net, loader, optimizer, lr_scheduler,device, epoch, loss_fn
         metrics: a dictionary of metrics
     """
     net.train()
+    sampler.set_epoch(epoch)
     train_loss = torch.tensor(0.).to(device)
     correct = torch.tensor(0.).to(device)
     total = 0
     para_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device)
     for batch_idx, (inputs, targets) in enumerate(para_loader):
-        xm.master_print(f"supervised {batch_idx}/{len(loader)}")
+        if (batch_idx + 1) % 10 == 0:
+            xm.master_print(f"supervised {batch_idx}/{len(loader)}")
         optimizer.zero_grad()
         loss, outputs = loss_fn(inputs, targets)
         loss.backward()
@@ -75,8 +77,10 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
         para_loader = loader
     else:
         para_loader = pl.ParallelLoader(loader, [device]).per_device_loader(device)
+
     for batch_idx, batch in enumerate(para_loader):
-        xm.master_print(f"eval {batch_idx}/{len(loader)}")
+        if (batch_idx + 1) % 10 == 0:
+            xm.master_print(f"eval {batch_idx}/{len(loader)}")
         with torch.no_grad():
             # [:2] to ignore teacher logits in the case of distillation
             inputs, targets = batch[:2]
@@ -96,10 +100,10 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
             if teacher is not None:
                 teacher_predicted = teacher_logits.argmax(-1)
                 agree += predicted.eq(teacher_predicted).sum()
-                kl += kl_divergence(
-                    Categorical(logits=teacher_logits),
-                    Categorical(logits=logits)
-                ).mean()
+                # kl += kl_divergence(
+                #     Categorical(logits=teacher_logits),
+                #     Categorical(logits=logits)
+                # ).mean()
             #batch_ece_stats = batch_calibration_stats(logits, targets, num_bins=10)
             #ece_stats = batch_ece_stats if ece_stats is None else [
             #    t1 + t2 for t1, t2 in zip(ece_stats, batch_ece_stats)
@@ -113,14 +117,14 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     #else:
     #    ece = None
     metrics = dict(
-        test_loss=test_loss / (xm.xrt_world_size() * len(loader)),
-        test_acc=100. * correct / total,
-        #test_ece=ece,
-        test_nll=nll / (xm.xrt_world_size() * len(loader)),
+        test_loss=test_loss.cpu().item() / (xm.xrt_world_size() * len(loader)),
+        test_acc=100. * correct.cpu().item() / total.cpu().item(),
+        test_nll=nll.cpu().item() / (xm.xrt_world_size() * len(loader)),
         epoch=epoch,
-        total=total,
-        correct=correct,
+        total=total.cpu().item(),
+        correct=correct.cpu().item(),
     )
+
     # only return generalization metrics if there is no teacher
     if teacher is None:
         return metrics
@@ -134,9 +138,10 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     #    metrics.update({f'test_cka_{i}': val for i, val in enumerate(cka)})
     return metrics
 
-def distillation_epoch(student, train_loader, optimizer, lr_scheduler, device, epoch,
+def distillation_epoch(student, train_loader, train_sampler, optimizer, lr_scheduler, device, epoch,
                        loss_fn, dataset=None, drop_last=True, sampler=None, num_workers =None):
     student.train()
+    train_sampler.set_epoch(epoch)
     train_loss = torch.tensor(0.).to(device)
     correct = torch.tensor(0.).to(device)
     agree = torch.tensor(0.).to(device)
@@ -147,7 +152,8 @@ def distillation_epoch(student, train_loader, optimizer, lr_scheduler, device, e
     num_batches = len(train_loader)
     train_loader.loader = train_loader._make_loader(dataset, drop_last, sampler, num_workers)
     for batch_idx, (inputs, targets, teacher_logits, temp) in enumerate(train_loader):
-        xm.master_print(f"distill {batch_idx}/{len(train_loader)}")
+        if (batch_idx + 1) % 10 == 0:
+            xm.master_print(f"distill ep{epoch} {batch_idx}/{len(train_loader)}")
         optimizer.zero_grad()
         loss, student_logits = loss_fn(inputs, targets, teacher_logits, temp)
         loss.backward()
