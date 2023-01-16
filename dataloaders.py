@@ -13,9 +13,9 @@ class DistillLoader(object):
         self.temp = temp
         self.batch_size = batch_size
         self.loader = self._make_loader(dataset, drop_last, sampler, num_workers)
-        
+
     def __len__(self):
-        return len(self.loader) 
+        return len(self.loader)
 
     def __iter__(self):
         return self.generator
@@ -35,7 +35,7 @@ class DistillLoader(object):
                 torch.ones(current_batch_size, 1) * self.temp
             ])
             yield inputs, targets, logits, temp
-            
+
 class PermutedDistillLoader(DistillLoader):
     def __init__(self, teacher, dataset, temp, batch_size, shuffle, drop_last, device, **kwargs):
        super(PermutedDistillLoader, self).__init__(teacher, dataset, temp, batch_size, shuffle, drop_last, device,**kwargs)
@@ -63,6 +63,8 @@ class PermutedDistillLoader(DistillLoader):
 class UniformDistillLoader(DistillLoader):
     def __init__(self, teacher, dataset, temp, batch_size, shuffle, drop_last, device, **kwargs):
         super(UniformDistillLoader, self).__init__(teacher, dataset, temp, batch_size, shuffle, drop_last, device,**kwargs)
+
+    @property
     def generator(self):
         self.teacher.to(self.device)
         for inputs, targets in self.loader:
@@ -74,7 +76,7 @@ class UniformDistillLoader(DistillLoader):
                 num_classes = teacher_logits.shape[1]
 
                 # Create one-hot mask
-                mask = torch.one_hot(targets, num_classes).to(self.device)
+                mask = torch.nn.functional.one_hot(targets, num_classes).to(self.device)
 
                 # Multiply mask with teacher_logits
                 logit_of_correct_class = (mask * teacher_logits).sum(dim=1)
@@ -83,6 +85,7 @@ class UniformDistillLoader(DistillLoader):
                 uniform_logits = (1 - logit_of_correct_class[:, None]) / (num_classes - 1)
                 uniform_logits = uniform_logits * (1 - mask) + logit_of_correct_class[:, None] * mask
                 uniform_logits.to(self.device)
+                print(uniform_logits, uniform_logits.sum(dim=-1))
             temp = torch.cat([
                 torch.ones(batch_size, 1) * self.temp
             ])
