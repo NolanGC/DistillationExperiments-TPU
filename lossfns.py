@@ -68,7 +68,7 @@ class TeacherStudentUniformFwdCrossEntLoss(object):
         uniform_prob = uniform_prob * (1 - mask) + prob_of_correct_class[:, None] * mask
         #xm.master_print('UNIFORM', uniform_prob[0])
         student_logp = F.log_softmax(student_logits / temp, dim=-1)
-        loss = -(temp ** 2 * teacher_probs * student_logp).sum(-1).mean()
+        loss = -(temp ** 2 * uniform_prob * student_logp).sum(-1).mean()
         return loss
 
 
