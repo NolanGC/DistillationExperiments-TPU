@@ -1,4 +1,5 @@
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 import torch
 import numpy as np
 import perm_utils
@@ -66,10 +67,10 @@ class UniformDistillLoader(DistillLoader):
     def generator(self):
         self.teacher.to(self.device)
         for inputs, targets in self.loader:
-            inputs.to(self.device)
-            targets.to(self.device)
             with torch.no_grad():
                 teacher_logits = reduce_ensemble_logits(self.teacher(inputs))
+                teacher_logits = F.softmax(teacher_logits / self.temp, dim=1)
+                xm.master_print("TEAHCER_LOGITS:", teacher_logits)
                 batch_size = inputs.shape[0]
                 num_classes = teacher_logits.shape[1]
 
@@ -82,9 +83,10 @@ class UniformDistillLoader(DistillLoader):
                 # Create uniform logits
                 uniform_logits = (1 - logit_of_correct_class[:, None]) / (num_classes - 1)
                 uniform_logits = uniform_logits * (1 - mask) + logit_of_correct_class[:, None] * mask
+                xm.master_print("UNIFORM TEAHCER_LOGITS:", uniform_logits)
                 uniform_logits.to(self.device)
             temp = torch.cat([
                 torch.ones(batch_size, 1) * self.temp
-            ])
+            ]).to(self.device)
             yield inputs, targets, uniform_logits, temp
 
