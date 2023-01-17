@@ -58,6 +58,7 @@ class Options:
 
     # Apply early stopping to teacher.
     early_stop_epoch : int = 999999999
+    student_learning_rate : float = None
 
 def main(rank, args):
     SERIAL_EXEC = xmp.MpSerialExecutor()
@@ -154,7 +155,8 @@ def main(rank, args):
 
     xm.master_print("Beginning distillation stage.")
     student = teachers[0]
-    optimizer = torch.optim.SGD(params= student.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, momentum=args.momentum, nesterov=args.nesterov)
+    student_learning_rate = args.student_learning_rate if args.student_learning_rate else args.learning_rate
+    optimizer = torch.optim.SGD(params= student.parameters(), lr=student_learning_rate, weight_decay=args.weight_decay, momentum=args.momentum, nesterov=args.nesterov)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.student_epochs, eta_min=args.cosine_annealing_etamin)
     start_epoch = 0
 
