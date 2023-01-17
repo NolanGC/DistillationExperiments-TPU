@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from models import PreResnet, ClassifierEnsemble
 from dataloaders import DistillLoader, PermutedDistillLoader, UniformDistillLoader
 from data import get_dataset
-from lossfns import ClassifierTeacherLoss, ClassifierEnsembleLoss, TeacherStudentFwdCrossEntLoss, ClassifierStudentLoss
+from lossfns import ClassifierTeacherLoss, ClassifierEnsembleLoss, TeacherStudentFwdCrossEntLoss, ClassifierStudentLoss, ClassifierTeacherLossWithTemp
 from training import eval_epoch, supervised_epoch, distillation_epoch
 from fileutil import Platform
 # ---------------------------------------------------------------------------- #
@@ -168,7 +168,7 @@ def main(rank, args):
         lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
         start_epoch = ckpt["next_epoch"]
 
-    student_loss =ClassifierTeacherLoss(student, device)
+    student_loss = ClassifierTeacherLossWithTemp(student, device, temp=args.temperature, num_classes=100)
     records = []
     eval_metrics = eval_epoch(student, test_loader, device=device, epoch=start_epoch, loss_fn=student_loss)
     records.append(eval_metrics)
