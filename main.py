@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from models import PreResnet, ClassifierEnsemble
 from dataloaders import DistillLoader, PermutedDistillLoader, UniformDistillLoader
 from data import get_dataset
-from lossfns import ClassifierTeacherLoss, ClassifierEnsembleLoss, TeacherStudentFwdCrossEntLoss, ClassifierStudentLoss
+from lossfns import ClassifierTeacherLoss, ClassifierEnsembleLoss, TeacherStudentFwdCrossEntLoss, ClassifierStudentLoss, TeacherStudentUniformFwdCrossEntLoss
 from training import eval_epoch, supervised_epoch, distillation_epoch
 from fileutil import Platform
 # ---------------------------------------------------------------------------- #
@@ -164,7 +164,8 @@ def main(rank, args):
     if args.permuted:
         distill_loader = PermutedDistillLoader(temp=args.temperature, batch_size=args.batch_size, shuffle=True, drop_last=True, device=device, sampler=distill_sampler, num_workers=args.num_workers, teacher=teacher, dataset=train_dataset)
     elif(args.uniform):
-        distill_loader = UniformDistillLoader(temp=args.temperature, batch_size=args.batch_size, shuffle=True, drop_last=True, device=device, sampler=distill_sampler, num_workers=args.num_workers, teacher=teacher, dataset=train_dataset)
+        distill_loader = DistillLoader(temp=args.temperature, batch_size=args.batch_size, shuffle=True, drop_last=True, device=device, sampler=distill_sampler, num_workers=args.num_workers, teacher=teacher, dataset=train_dataset)
+        # Uniform inside loss fn
     else:
         distill_loader = DistillLoader(temp=args.temperature, batch_size=args.batch_size, shuffle=True, drop_last=True, device = device, sampler=distill_sampler, num_workers=args.num_workers, teacher=teacher, dataset=train_dataset)
     #teacher_train_metrics = eval_epoch(teacher, distill_loader, device=device, epoch=0,
@@ -189,8 +190,13 @@ def main(rank, args):
         lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
         start_epoch = ckpt["next_epoch"]
 
-    student_base_loss = TeacherStudentFwdCrossEntLoss()
-    student_loss = ClassifierStudentLoss(student, student_base_loss, alpha=0.0, device=device) # alpha is set to zero
+    if(args.uniform):
+        student_base_loss = TeacherStudentUniformFwdCrossEntLoss()
+        student_loss = ClassifierStudentLoss(student, student_base_loss, alpha=0.0, device=device, uniform=args.uniform) # alpha is set to zero
+    else:
+        student_base_loss = TeacherStudentFwdCrossEntLoss()
+        student_loss = ClassifierStudentLoss(student, student_base_loss, alpha=0.0, device=device, uniform=args.uniform) # alpha is set to zero
+
     records = []
     eval_metrics = eval_epoch(student, test_loader, device=device, epoch=start_epoch, loss_fn=student_loss, teacher=teacher)
     records.append(eval_metrics)
