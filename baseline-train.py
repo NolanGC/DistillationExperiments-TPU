@@ -40,7 +40,7 @@ gcp_root = 'gs://tianjin-distgen/nolan/'
 # ---------------------------------------------------------------------------- #
 @dataclass
 class Options:
-    temperature : int
+    temperature : float
     batch_size : int
     num_workers : int
     learning_rate : float
