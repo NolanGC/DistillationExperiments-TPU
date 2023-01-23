@@ -36,6 +36,20 @@ class ClassifierTeacherLoss(object):
         loss = F.cross_entropy(logits.to(self.device), targets.to(self.device))
         return loss, logits
 
+class ClassifierTeacherLossWithTemp(object):
+    def __init__(self, teacher_model, dev, temp, num_classes):
+        self.teacher = teacher_model
+        self.device = dev
+        self.temp = temp
+        self.num_classes = num_classes
+
+    def __call__(self, inputs, targets):
+        logits = self.teacher(inputs.to(self.device))
+        teacher_probs = F.one_hot(targets, num_classes=self.num_classes)
+        student_logp = F.log_softmax(logits / self.temp, dim=-1)
+        loss = -(self.temp ** 2 * teacher_probs * student_logp).sum(-1).mean()
+        return loss, logits
+
 
 class TeacherStudentFwdCrossEntLoss(object):
     #Soft teacher/student cross entropy loss from [Hinton et al (2015)]

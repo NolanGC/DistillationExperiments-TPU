@@ -14,9 +14,9 @@ class DistillLoader(object):
         self.temp = temp
         self.batch_size = batch_size
         self.loader = self._make_loader(dataset, drop_last, sampler, num_workers)
-        
+
     def __len__(self):
-        return len(self.loader) 
+        return len(self.loader)
 
     def __iter__(self):
         return self.generator
@@ -36,7 +36,7 @@ class DistillLoader(object):
                 torch.ones(current_batch_size, 1) * self.temp
             ])
             yield inputs, targets, logits, temp
-            
+
 class PermutedDistillLoader(DistillLoader):
     def __init__(self, teacher, dataset, temp, batch_size, shuffle, drop_last, device, **kwargs):
        super(PermutedDistillLoader, self).__init__(teacher, dataset, temp, batch_size, shuffle, drop_last, device,**kwargs)
