@@ -139,7 +139,7 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     return metrics
 
 def distillation_epoch(student, train_loader, train_sampler, optimizer, lr_scheduler, device, epoch,
-                       loss_fn, dataset=None, drop_last=True, sampler=None, num_workers =None):
+                       loss_fn, dataset=None, drop_last=True, sampler=None, num_workers =None, uniform=False):
     student.train()
     train_sampler.set_epoch(epoch)
     train_loss = torch.tensor(0.).to(device)
@@ -155,7 +155,10 @@ def distillation_epoch(student, train_loader, train_sampler, optimizer, lr_sched
         if (batch_idx + 1) % 10 == 0:
             xm.master_print(f"distill ep{epoch} {batch_idx}/{len(train_loader)}")
         optimizer.zero_grad()
-        loss, student_logits = loss_fn(inputs, targets, teacher_logits, temp)
+        if(uniform):
+            loss, student_logits = loss_fn(inputs, targets, teacher_logits, temp, targets)
+        else:
+            loss, student_logits = loss_fn(inputs, targets, teacher_logits, temp)
         loss.backward()
         xm.optimizer_step(optimizer)
         train_loss += loss

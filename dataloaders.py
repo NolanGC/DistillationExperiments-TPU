@@ -1,4 +1,5 @@
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 import torch
 import numpy as np
 import perm_utils

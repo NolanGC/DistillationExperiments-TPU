@@ -1,13 +1,15 @@
 import torch
+import torch_xla.core.xla_model as xm
 import torch.nn.functional as F
 from utils import reduce_ensemble_logits
 
 class ClassifierStudentLoss(object):
-    def __init__(self, student_model, base_loss, device=None, alpha=0.9):
+    def __init__(self, student_model, base_loss, device=None, alpha=0.9, uniform = False):
         self.student = student_model
         self.device = device
         self.base_loss = base_loss
         self.alpha = alpha
+        self.uniform = uniform
 
     def __call__(self, inputs, targets, teacher_logits, temp=None):
         real_batch_size = targets.size(0)
@@ -17,7 +19,10 @@ class ClassifierStudentLoss(object):
         hard_loss = F.cross_entropy(student_logits[:real_batch_size], targets)
         # temp = torch.ones_like(student_logits) if temp is None else temp.unsqueeze(-1)
         temp = torch.ones_like(student_logits) if temp is None else temp
-        soft_loss = self.base_loss(teacher_logits, student_logits, temp)
+        if(self.uniform):
+            soft_loss = self.base_loss(teacher_logits, student_logits, temp, targets)
+        else:
+            soft_loss = self.base_loss(teacher_logits, student_logits, temp)
         loss = self.alpha * hard_loss + (1 - self.alpha) * soft_loss
         return loss, student_logits
 
@@ -57,7 +62,7 @@ class TeacherStudentFwdCrossEntLoss(object):
         student_logp = F.log_softmax(student_logits / temp, dim=-1)
         loss = -(temp ** 2 * teacher_probs * student_logp).sum(-1).mean()
         return loss
-    
+
 class TeacherStudentUniformFwdCrossEntLoss(object):
 
     def __call__(self, teacher_logits, student_logits, temp, targets):
@@ -79,6 +84,7 @@ class TeacherStudentUniformFwdCrossEntLoss(object):
         student_logp = F.log_softmax(student_logits / temp, dim=-1)
         loss = -(temp ** 2 * uniform_prob * student_logp).sum(-1).mean()
         return loss
+
 
 class ClassifierEnsembleLoss(object):
     def __init__(self, ensemble, device):
