@@ -59,35 +59,3 @@ class PermutedDistillLoader(DistillLoader):
                 torch.ones(batch_size, 1) * self.temp
             ])
             yield inputs, targets, permuted_teacher_logits, temp
-
-class UniformDistillLoader(DistillLoader):
-    def __init__(self, teacher, dataset, temp, batch_size, shuffle, drop_last, device, **kwargs):
-        super(UniformDistillLoader, self).__init__(teacher, dataset, temp, batch_size, shuffle, drop_last, device,**kwargs)
-
-    @property
-    def generator(self):
-        self.teacher.to(self.device)
-        for inputs, targets in self.loader:
-            inputs.to(self.device)
-            targets.to(self.device)
-            with torch.no_grad():
-                teacher_logits = reduce_ensemble_logits(self.teacher(inputs))
-                batch_size = inputs.shape[0]
-                num_classes = teacher_logits.shape[1]
-
-                # Create one-hot mask
-                mask = torch.nn.functional.one_hot(targets, num_classes).to(self.device)
-
-                # Multiply mask with teacher_logits
-                logit_of_correct_class = (mask * teacher_logits).sum(dim=1)
-
-                # Create uniform logits
-                uniform_logits = (1 - logit_of_correct_class[:, None]) / (num_classes - 1)
-                uniform_logits = uniform_logits * (1 - mask) + logit_of_correct_class[:, None] * mask
-                uniform_logits.to(self.device)
-                print(uniform_logits, uniform_logits.sum(dim=-1))
-            temp = torch.cat([
-                torch.ones(batch_size, 1) * self.temp
-            ])
-            yield inputs, targets, uniform_logits, temp
-
