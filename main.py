@@ -24,7 +24,7 @@ from dataclasses import dataclass
 #                                module imports                                #
 # ---------------------------------------------------------------------------- #
 from models import PreResnet, ClassifierEnsemble
-from dataloaders import DistillLoader, PermutedDistillLoader, UniformDistillLoader
+from dataloaders import DistillLoader, PermutedDistillLoader
 from data import get_dataset
 from lossfns import ClassifierTeacherLoss, ClassifierEnsembleLoss, TeacherStudentFwdCrossEntLoss, ClassifierStudentLoss, TeacherStudentUniformFwdCrossEntLoss
 from training import eval_epoch, supervised_epoch, distillation_epoch
