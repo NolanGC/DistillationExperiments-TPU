@@ -85,7 +85,6 @@ class TeacherStudentUniformFwdCrossEntLoss(object):
         loss = -(temp ** 2 * uniform_prob * student_logp).sum(-1).mean()
         return loss
 
-
 class ClassifierEnsembleLoss(object):
     def __init__(self, ensemble, device):
         self.ensemble = ensemble
