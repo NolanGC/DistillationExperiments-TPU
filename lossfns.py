@@ -85,6 +85,31 @@ class TeacherStudentUniformFwdCrossEntLoss(object):
         loss = -(temp ** 2 * uniform_prob * student_logp).sum(-1).mean()
         return loss
 
+
+class TeacherStudentUniformArgmaxFwdCrossEntLoss(object):
+
+    def __call__(self, teacher_logits, student_logits, temp):
+        if teacher_logits.dim() == 3:
+            teacher_logits = reduce_ensemble_logits(teacher_logits)
+        teacher_probs = F.softmax(teacher_logits / temp, dim=-1)
+        num_classes = teacher_logits.shape[1]
+        # Get the index of the maximum probability (argmax)
+        _, argmax = teacher_probs.max(dim=1)
+
+        # create mask
+        mask = torch.nn.functional.one_hot(argmax, num_classes)
+
+        # Multiply mask with teacher_logits
+        prob_of_argmax_class = (mask * teacher_probs).sum(dim=1)
+
+        # Create uniform logits
+        uniform_prob = (1 - prob_of_argmax_class[:, None]) / (num_classes - 1)
+        uniform_prob = uniform_prob * (1 - mask) + prob_of_argmax_class[:, None] * mask
+        student_logp = F.log_softmax(student_logits / temp, dim=-1)
+        loss = -(temp ** 2 * uniform_prob * student_logp).sum(-1).mean()
+        return loss
+
+
 class ClassifierEnsembleLoss(object):
     def __init__(self, ensemble, device):
         self.ensemble = ensemble
@@ -94,4 +119,3 @@ class ClassifierEnsembleLoss(object):
         logits = self.ensemble(inputs.to(self.device))
         logits = reduce_ensemble_logits(logits)
         return F.nll_loss(logits, targets), logits
-
