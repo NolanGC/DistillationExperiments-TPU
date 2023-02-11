@@ -45,8 +45,8 @@ def supervised_epoch(net, loader, sampler, optimizer, lr_scheduler,device, epoch
         xm.optimizer_step(optimizer)
     lr_scheduler.step()
     metrics = dict(
-            train_loss=train_loss / len(loader),
-            train_acc=100 * correct / total,
+            train_loss=(train_loss / len(loader)).cpu().item(),
+            train_acc=(100 * correct / total).cpu().item(),
             lr=lr_scheduler.get_last_lr()[0],
             epoch=epoch
         )
@@ -117,9 +117,9 @@ def eval_epoch(net, loader, epoch, loss_fn, device=None, teacher=None, with_cka=
     #else:
     #    ece = None
     metrics = dict(
-        test_loss=test_loss.cpu().item() / (xm.xrt_world_size() * len(loader)),
-        test_acc=100. * correct.cpu().item() / total.cpu().item(),
-        test_nll=nll.cpu().item() / (xm.xrt_world_size() * len(loader)),
+        loss=(test_loss / (xm.xrt_world_size() * len(loader))).cpu().item(),
+        acc=100. * (correct / total).cpu().item(),
+        nll=nll.cpu().item() / (xm.xrt_world_size() * len(loader)),
         epoch=epoch,
         total=total.cpu().item(),
         correct=correct.cpu().item(),
