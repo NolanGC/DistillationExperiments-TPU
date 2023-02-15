@@ -54,6 +54,7 @@ class Options:
     evaluation_frequency : int
     permuted : bool
     experiment_name : str
+    replicate : str = ""
     uniform : bool = False
     inherit_weights : bool = True
 
