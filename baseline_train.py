@@ -55,6 +55,7 @@ class Options:
     permuted : bool
     experiment_name : str
     uniform : bool = False
+    inherit_weights : bool = True
 
     # Apply early stopping to teacher.
     early_stop_epoch : int = 999999999
@@ -184,7 +185,11 @@ def main(rank, args):
     teacher.to(device)
 
     xm.master_print("Beginning distillation stage.")
-    student = teachers[0]
+    if args.inherit_weights:
+      student = teachers[0]
+    else:
+      student = PreResnet(deptch=56).to(device)
+
     student_learning_rate = args.student_learning_rate if args.student_learning_rate else args.learning_rate
     optimizer = torch.optim.SGD(params= student.parameters(), lr=student_learning_rate, weight_decay=args.weight_decay, momentum=args.momentum, nesterov=args.nesterov)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.student_epochs, eta_min=args.cosine_annealing_etamin)
