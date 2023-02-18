@@ -58,6 +58,8 @@ class Options:
     uniform : bool = False
     inherit_weights : bool = True
 
+    # Power of temperature in
+    temperature_order : int = 2
     # Apply early stopping to teacher.
     early_stop_epoch : int = 999999999
     student_learning_rate : float = None
@@ -206,7 +208,10 @@ def main(rank, args):
         start_epoch = ckpt["next_epoch"]
         records = ckpt["records"]
 
-    student_loss = ClassifierTeacherLossWithTemp(student, device, temp=args.temperature, num_classes=100)
+    student_loss = ClassifierTeacherLossWithTemp(student, device,
+      temp=args.temperature,
+      temp_order=args.temperature_order,
+      num_classes=100)
 
     for split, loader in zip(["test", "valid"], [test_loader, valid_loader]):
         eval_metrics = eval_epoch(student, loader, epoch=start_epoch, device=device, loss_fn=student_loss)

@@ -37,17 +37,18 @@ class ClassifierTeacherLoss(object):
         return loss, logits
 
 class ClassifierTeacherLossWithTemp(object):
-    def __init__(self, teacher_model, dev, temp, num_classes):
+    def __init__(self, teacher_model, dev, temp, num_classes, temp_order):
         self.teacher = teacher_model
         self.device = dev
         self.temp = temp
+        self.temp_order = temp_order
         self.num_classes = num_classes
 
     def __call__(self, inputs, targets):
         logits = self.teacher(inputs.to(self.device))
         teacher_probs = F.one_hot(targets, num_classes=self.num_classes)
         student_logp = F.log_softmax(logits / self.temp, dim=-1)
-        loss = -(self.temp ** 2 * teacher_probs * student_logp).sum(-1).mean()
+        loss = -(self.temp ** self.temp_order * teacher_probs * student_logp).sum(-1).mean()
         return loss, logits
 
 
