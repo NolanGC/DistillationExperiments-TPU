@@ -218,7 +218,7 @@ def main(rank, args):
         xm.master_print("student epoch: ", epoch, " metrics: ", metrics)
         records.append(metrics)
     xm.master_print("Final student evaluation.")
-    final_eval_metrics = eval_epoch(student, test_loader, device=device, epoch=epoch, loss_fn=student_loss, teacher=teacher)
+    final_eval_metrics = eval_epoch(student, test_loader, device=device, epoch=300, loss_fn=student_loss, teacher=teacher)
     xm.master_print('done')
     Platform.save_model(student.cpu().state_dict(), f'gs://tianjin-distgen/nolan/{args.experiment_name}/final_student.pt')
     Platform.save_model(final_eval_metrics, f'gs://tianjin-distgen/nolan/{args.experiment_name}/final_student_metric.pt')
