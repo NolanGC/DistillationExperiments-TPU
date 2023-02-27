@@ -1,5 +1,9 @@
 import torch
+import os
+import sys
+
 import torch.nn.functional as F
+from contextlib import contextmanager
 
 def masked_kd_loss( student_logits, teacher_logits, temperature=1, mask=None):
     '''
@@ -24,3 +28,17 @@ def masked_kd_loss( student_logits, teacher_logits, temperature=1, mask=None):
     loss = -(p_T * F.log_softmax(beta_logits_S, dim=-1) * mask).sum(dim=-1)
     loss = loss.sum() / torch.sum(mask)
     return loss
+
+@contextmanager
+def silence(enable:bool = True):
+    with open(os.devnull, "w") as devnull:
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        if enable:
+            sys.stdout = devnull
+            sys.stderr = devnull
+        try:  
+            yield
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
