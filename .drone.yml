@@ -1,0 +1,12 @@
+kind: pipeline
+type: docker
+name: default
+
+environment:
+  NVIDIA_VISIBLE_DEVICES: all
+
+pipeline:
+  build:
+    image: gcr.io/tpu-pytorch/xla:r1.13_3.8_cuda_11.2
+    commands:
+      - python3.8 -m unittest discover nlp/
