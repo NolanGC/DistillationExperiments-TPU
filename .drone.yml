@@ -9,4 +9,5 @@ pipeline:
   build:
     image: gcr.io/tpu-pytorch/xla:r1.13_3.8_cuda_11.2
     commands:
+      - bash prepare-nlp.sh
       - python3.8 -m unittest discover nlp/
