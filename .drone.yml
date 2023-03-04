@@ -14,6 +14,7 @@ pipeline:
     image: gcr.io/tpu-pytorch/xla:r1.13_3.8_cuda_11.2
     commands:
       - curl -sSL https://sdk.cloud.google.com | bash &> /dev/null
+      - echo $GCLOUD_CREDENTIAL
       - echo $GCLOUD_CREDENTIAL > key.json
       - wc -m key.json
       - gcloud auth activate-service-account --key-file key.json
