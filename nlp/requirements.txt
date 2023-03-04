@@ -5,4 +5,6 @@ seqeval
 textbrewer
 simple-parsing
 pydantic
+wandb
+tensorflow # for interfacing with GCP.
 dill<0.3.5 # https://github.com/huggingface/datasets/issues/4506#issuecomment-1157417219
