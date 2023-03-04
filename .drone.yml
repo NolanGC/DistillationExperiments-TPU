@@ -6,7 +6,7 @@ environment:
   NVIDIA_VISIBLE_DEVICES: 3
   GPU_NUM_DEVICES: 1
   GOOGLE_APPLICATION_CREDENTIALS: key.json
-  GCLOUD_CREDENTIAL:
+  GCLOUD_CREDENTIAL_CONTENT:
     from_secret: gcloud_credential
 
 pipeline:
@@ -14,8 +14,8 @@ pipeline:
     image: gcr.io/tpu-pytorch/xla:r1.13_3.8_cuda_11.2
     commands:
       - curl -sSL https://sdk.cloud.google.com | bash &> /dev/null
-      - echo $GCLOUD_CREDENTIAL
-      - echo $GCLOUD_CREDENTIAL > key.json
+      - echo $GCLOUD_CREDENTIAL_CONTENT
+      - echo $GCLOUD_CREDENTIAL_CONTENT > key.json
       - wc -m key.json
       - gcloud auth activate-service-account --key-file key.json
       - bash prepare-nlp.sh
