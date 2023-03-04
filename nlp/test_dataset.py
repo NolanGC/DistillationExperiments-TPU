@@ -1,12 +1,14 @@
 import unittest
-from dataset import get_dataset, DatasetKind, PartitionKind
+from dataset import get_dataloader, DatasetKind, PartitionKind, DataOption
 
 class TestDataset(unittest.TestCase):
     def test_len(self):
-        train = get_dataset(DatasetKind.SST2, PartitionKind.TRAIN, silence=True)
+        option = DataOption(train_batch_size=1, eval_batch_size=1, seed=42, num_workers=4)
+
+        train = get_dataloader(DatasetKind.SST2, PartitionKind.TRAIN, option, silence=True)
         self.assertEqual(len(train), 67349)
 
-        test = get_dataset(DatasetKind.SST2, PartitionKind.TEST, silence=True)
+        test = get_dataloader(DatasetKind.SST2, PartitionKind.TEST, option, silence=True)
         self.assertEqual(len(test), 872)
 
 if __name__ == '__main__':

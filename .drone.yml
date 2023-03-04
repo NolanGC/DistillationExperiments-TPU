@@ -3,7 +3,8 @@ type: docker
 name: default
 
 environment:
-  NVIDIA_VISIBLE_DEVICES: all
+  NVIDIA_VISIBLE_DEVICES: 3
+  GPU_NUM_DEVICES: 1
 
 pipeline:
   build:
