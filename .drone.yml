@@ -5,10 +5,14 @@ name: default
 environment:
   NVIDIA_VISIBLE_DEVICES: 3
   GPU_NUM_DEVICES: 1
+  GOOGLE_APPLICATION_CREDENTIALS: key.json
+  GCLOUD_CREDENTIAL:
+    from_secret: gcloud_credential
 
 pipeline:
   build:
     image: gcr.io/tpu-pytorch/xla:r1.13_3.8_cuda_11.2
     commands:
+      - echo $GCLOUD_CREDENTIAL > key.json
       - bash prepare-nlp.sh
       - GPU_NUM_DEVICES=1 python3.8 -m unittest discover nlp/
