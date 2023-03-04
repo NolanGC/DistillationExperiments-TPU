@@ -11,4 +11,4 @@ pipeline:
     image: gcr.io/tpu-pytorch/xla:r1.13_3.8_cuda_11.2
     commands:
       - bash prepare-nlp.sh
-      - python3.8 -m unittest discover nlp/
+      - GPU_NUM_DEVICES=1 python3.8 -m unittest discover nlp/
