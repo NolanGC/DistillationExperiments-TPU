@@ -4,31 +4,60 @@ import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
 import torch
 import torch.nn.functional as F
-from textbrewer import DistillationConfig,TrainingConfig,GeneralDistiller
-from misc import masked_kd_loss
+import wandb
+from textbrewer import GeneralDistiller
+from misc import kd_loss
 
-def post_adaptor(dict_object):
-    if 'logits' in dict_object:
-        logits = dict_object['logits']
-        if not isinstance(logits,(list,tuple)):
-            dict_object['logits'] = [ logits ]
-    return dict_object
-
-class TPUGeneralDistiller(GeneralDistiller):
-    def __init__(self, train_config,
-             distill_config,
+class TPUGeneralDistiller:
+    def __init__(self,
              model_T,
              model_S,
-             adaptor_T,
-             adaptor_S,
              sampler,
+             temp,
+             eval_freq,
+             train_loader,
+             eval_loader,
              permute_logits=False):
 
-        super(TPUGeneralDistiller, self).__init__(train_config, distill_config, model_T, model_S, adaptor_T, adaptor_S)
+        self.teacher = model_T
+        self.student = model_S
         self.permute_logits = permute_logits
         self.sampler = sampler
+        self.temp = torch.tensor(temp).to(xm.xla_device())
+        self.eval_freq = eval_freq
+        self.eval_loader = eval_loader
+        self.train_loader = train_loader
     
-    def train(self, optimizer, scheduler, dataloader, num_epochs=None, max_grad_norm=-1.0, **args):
+    def eval(self, global_step):
+        device = xm.xla_device()
+        correct = torch.tensor(0.0).to(device)
+        total = torch.tensor(0.0).to(device)
+        self.student.eval()
+
+        device = xm.xla_device()
+        parallel_loader = pl.ParallelLoader(
+            self.eval_loader, [device]).per_device_loader(device)
+        for batch in parallel_loader:
+            batch = {k: v for k, v in batch.items()}
+            with torch.no_grad():
+                outputs = self.student(**batch)
+
+            logits = outputs.logits
+            predictions = torch.argmax(logits, dim=-1)
+            
+            correct += torch.sum(torch.eq(predictions, batch["labels"]))
+            total += torch.tensor(predictions.size(0))
+            xm.mark_step()
+
+
+        correct, total = xm.all_reduce(xm.REDUCE_SUM, [correct, total])
+        accuracy = correct/total.cpu().item()
+        xm.mark_step()
+        xm.master_print(f"[eval] {correct}/{total} {accuracy}")
+        wandb.log({'accuracy': accuracy}, step=global_step)
+
+    def train(self, optimizer, scheduler, num_epochs=None, max_grad_norm=-1.0, **args):
+        self.teacher.train()
         device = xm.xla_device()
         global_step = 0
         for current_epoch in range(int(num_epochs)):
@@ -36,18 +65,16 @@ class TPUGeneralDistiller(GeneralDistiller):
             optimizer.zero_grad()
 
             parallel_loader = pl.ParallelLoader(
-                dataloader, [device]).per_device_loader(device)
+                self.train_loader, [device]).per_device_loader(device)
 
             for step, batch in enumerate(parallel_loader):
                 with torch.no_grad():
-                    results_T = self.model_T(**batch, **args)
-                results_S = self.model_S(**batch, **args)
+                    results_T = self.teacher(**batch, **args)
+                results_S = self.student(**batch, **args)
                 teacher_logit = results_T.logits
                 student_logit = results_S.logits
 
-                temperature = self.d_config.temperature
-                loss = masked_kd_loss(student_logit, teacher_logit, temperature)
-                loss = loss * self.d_config.kd_loss_weight
+                loss = kd_loss(student_logit, teacher_logit, self.temp)
                 loss.backward()
 
                 if xm.is_master_ordinal() and step % 10 == 0:
@@ -55,9 +82,15 @@ class TPUGeneralDistiller(GeneralDistiller):
                         len(parallel_loader), loss.item()))
 
                 if max_grad_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(self.model_S.parameters(), max_grad_norm)
+                    torch.nn.utils.clip_grad_norm_(self.student.parameters(), max_grad_norm)
                 
                 xm.optimizer_step(optimizer)
+                wandb.log({'loss': loss.item(),
+                           'lr': optimizer.param_groups[-1]['lr']}, step=global_step)
+
                 scheduler.step()
                 optimizer.zero_grad()
                 global_step += 1
+            
+            if (current_epoch + 1) % self.eval_freq == 0:
+                self.eval(global_step - 1)

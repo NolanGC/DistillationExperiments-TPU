@@ -8,10 +8,10 @@ from pydantic.dataclasses import dataclass
 
 @dataclass
 class DataOption:
-    train_batch_size: int
-    eval_batch_size: int
-    seed: int
-    num_workers: int
+    train_batch_size: int = 4
+    eval_batch_size: int = 100
+    seed: int = 42
+    num_workers: int = 4
 
 
 class DatasetKind(Enum):
