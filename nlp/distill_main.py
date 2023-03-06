@@ -96,6 +96,7 @@ class TrainOption:
     lr : float = 1e-4
     epochs : int = 30
     temperature : int = 8
+    one_hot : bool = False
 
 @dataclass
 class Options:
