@@ -41,10 +41,11 @@ def _mp_fn(index, args):
         teacher_model.load_state_dict(Platform.load_model('gs://tianjin-distgen/sst2_teacher_model.pt', map_location=torch.device('cpu')))
         teacher_model.to(device=device)
     
-    wandb.init(
-        project="sst2-distillation",
-        group=args.experiment_name,
-        config=vars(args))
+    if xm.is_master_ordinal():
+        wandb.init(
+            project="sst2-distillation",
+            group=args.experiment_name,
+            config=vars(args))
     
     num_training_steps = len(train_loader) * args.train.epochs
     optimizer = AdamW(student_model.parameters(), lr=args.train.lr)
@@ -54,9 +55,8 @@ def _mp_fn(index, args):
 
     distiller = TPUGeneralDistiller(
         model_T=teacher_model, model_S=student_model,
-        sampler=train_loader.sampler, temp=args.temperature, 
-        eval_freq=args.train.eval_freq, train_loader=train_loader,
-        eval_loader=test_loader)
+        sampler=train_loader.sampler, train_args=args.train,
+        train_loader=train_loader, eval_loader=test_loader)
 
     distiller.train(optimizer=optimizer, scheduler=scheduler, 
                     num_epochs=args.train.epochs)
@@ -95,13 +95,13 @@ class TrainOption:
     eval_freq : int = 5
     lr : float = 1e-4
     epochs : int = 30
+    temperature : int = 8
 
 @dataclass
 class Options:
     experiment_name : str 
     train : TrainOption = TrainOption()
     data : DataOption = DataOption()
-    temperature : int = 8
 
 
 if __name__ == '__main__':

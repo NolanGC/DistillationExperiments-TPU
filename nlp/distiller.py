@@ -13,8 +13,7 @@ class TPUGeneralDistiller:
              model_T,
              model_S,
              sampler,
-             temp,
-             eval_freq,
+             train_args,
              train_loader,
              eval_loader,
              permute_logits=False):
@@ -23,8 +22,7 @@ class TPUGeneralDistiller:
         self.student = model_S
         self.permute_logits = permute_logits
         self.sampler = sampler
-        self.temp = torch.tensor(temp).to(xm.xla_device())
-        self.eval_freq = eval_freq
+        self.train_args = train_args
         self.eval_loader = eval_loader
         self.train_loader = train_loader
     
@@ -49,12 +47,13 @@ class TPUGeneralDistiller:
             total += torch.tensor(predictions.size(0))
             xm.mark_step()
 
-
         correct, total = xm.all_reduce(xm.REDUCE_SUM, [correct, total])
         accuracy = correct/total.cpu().item()
         xm.mark_step()
-        xm.master_print(f"[eval] {correct}/{total} {accuracy}")
-        wandb.log({'accuracy': accuracy}, step=global_step)
+
+        if xm.is_master_ordinal():
+            print(f"[eval] {correct}/{total} {accuracy}")
+            wandb.log({'accuracy': accuracy}, step=global_step)
 
     def train(self, optimizer, scheduler, num_epochs=None, max_grad_norm=-1.0, **args):
         self.teacher.train()
@@ -74,23 +73,22 @@ class TPUGeneralDistiller:
                 teacher_logit = results_T.logits
                 student_logit = results_S.logits
 
-                loss = kd_loss(student_logit, teacher_logit, self.temp)
+                loss = kd_loss(student_logit, teacher_logit, self.train_args.temperature)
                 loss.backward()
 
                 if xm.is_master_ordinal() and step % 10 == 0:
                     print("epoch:{} step:{}/{} loss:{}".format(current_epoch, step,
                         len(parallel_loader), loss.item()))
+                    wandb.log({'loss': loss.item(),
+                               'lr': optimizer.param_groups[-1]['lr']}, step=global_step)
 
                 if max_grad_norm > 0:
                     torch.nn.utils.clip_grad_norm_(self.student.parameters(), max_grad_norm)
                 
                 xm.optimizer_step(optimizer)
-                wandb.log({'loss': loss.item(),
-                           'lr': optimizer.param_groups[-1]['lr']}, step=global_step)
-
                 scheduler.step()
                 optimizer.zero_grad()
                 global_step += 1
             
-            if (current_epoch + 1) % self.eval_freq == 0:
+            if (current_epoch + 1) % self.train_args.eval_freq == 0:
                 self.eval(global_step - 1)
