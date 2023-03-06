@@ -17,6 +17,8 @@ from pydantic.dataclasses import dataclass
 from simple_parsing import ArgumentParser
 from misc import silence
 
+CWD = os.path.dirname(os.path.abspath(__file__))
+
 def save(model, tokenizer, args):
     model_to_save = model.module if hasattr(model, "module") else model  # Take care of distributed/parallel training
     model_to_save.cpu().save_pretrained(args.experiment_name)
@@ -35,7 +37,7 @@ def _mp_fn(index, args):
         student_model = BertForSequenceClassification.from_pretrained('bert-base-uncased', from_tf=False, config=config, cache_dir=None)
         student_model.to(device=device)
 
-        bert_config = BertConfig.from_json_file('./configs/bert_config.json')
+        bert_config = BertConfig.from_json_file(os.path.join(CWD, 'configs/bert_config.json'))
         bert_config.num_labels = 2
         teacher_model = BertForSequenceClassification(bert_config)
         teacher_model.load_state_dict(Platform.load_model('gs://tianjin-distgen/sst2_teacher_model.pt', map_location=torch.device('cpu')))
