@@ -4,7 +4,8 @@ from misc import silence as silence_context
 import torch
 import torch_xla.core.xla_model as xm
 from pydantic.dataclasses import dataclass
-
+from fileutil import Platform
+import torch.nn.functional as F
 
 @dataclass
 class DataOption:
@@ -54,11 +55,41 @@ def get_dataloader(dataset: DatasetKind,
                                  max_length=MAX_LENGTH)
 
             dataset = dataset.map(tokenize, batched=True)
+        
+        if partition == PartitionKind.TRAIN:
+            all_el2n = []
+            # Load EL2N score.
+            for i in range(10):
+                path = f"gs://tianjin-distgen/sst2/el2n-raw-{i}.pt"
+                content = Platform.load_model(path)
+                pred = torch.tensor(content["pred"])
+                labels = torch.tensor(content["labels"])
+                
+                one_hot_labels = F.one_hot(labels, num_classes=2)
+                prob_pred = F.softmax(pred, dim=-1)
+
+                el2n = torch.norm(prob_pred - one_hot_labels, 2, dim=-1)
+                all_el2n.append(el2n)
+
+            all_el2n = torch.vstack(all_el2n)
+            avg_el2n = torch.mean(all_el2n, dim=0).cpu().numpy()
+
+            def assign_el2n(examples, idx):
+                return {"el2n": avg_el2n[idx]}
+            dataset = dataset.map(assign_el2n, batched=True, 
+                                  with_indices=True)
             dataset.set_format(type='torch',
-                               columns=[
-                                   'input_ids', 'token_type_ids',
-                                   'attention_mask', 'labels'
-                               ])
+                                columns=[
+                                    'input_ids', 'token_type_ids',
+                                    'attention_mask', 'labels', 'el2n'
+                                ])
+            assert torch.all(dataset["labels"] == labels).item()
+        else:
+            dataset.set_format(type='torch',
+                                columns=[
+                                    'input_ids', 'token_type_ids',
+                                    'attention_mask', 'labels'
+                                ])
 
         sampler = torch.utils.data.distributed.DistributedSampler(
             dataset,

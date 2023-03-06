@@ -99,6 +99,7 @@ class TrainOption:
     epochs : int = 30
     temperature : int = 8
     one_hot : bool = False
+    el2n_threshold : float = None
 
 @dataclass
 class Options:
