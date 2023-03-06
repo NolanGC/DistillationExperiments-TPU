@@ -80,11 +80,9 @@ class TPUGeneralDistiller:
                 elif self.train_args.el2n_threshold != None:
                     difficulty = el2n_scores > self.train_args.el2n_threshold
                     onehot_labels = F.one_hot(labels, num_classes=student_logit.shape[-1]).float()
-                    print(teacher_logit.shape, onehot_labels.shape)
                     teacher_logit = torch.where(torch.unsqueeze(difficulty, dim=-1), teacher_logit, onehot_labels)
                 
                 
-                print(difficulty)
                 loss = kd_loss(student_logit, teacher_logit, self.train_args.temperature)
                 loss.backward()
 
