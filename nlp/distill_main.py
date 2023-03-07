@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from dataset import get_dataloader, DatasetKind, PartitionKind, DataOption
 from pydantic.dataclasses import dataclass
 from simple_parsing import ArgumentParser
-from misc import silence
+from misc import silence, flatten
 
 CWD = os.path.dirname(os.path.abspath(__file__))
 
@@ -46,8 +46,8 @@ def _mp_fn(index, args):
     if xm.is_master_ordinal():
         wandb.init(
             project="sst2-distillation",
-            group=args.experiment_name,
-            config=vars(args))
+            name=args.experiment_name,
+            config=flatten(vars(args)))
     
     num_training_steps = len(train_loader) * args.train.epochs
     optimizer = AdamW(student_model.parameters(), lr=args.train.lr)

@@ -2,7 +2,8 @@ import torch
 import os
 import sys
 from typing import Union
-
+import collections
+import dataclasses
 
 import torch.nn.functional as F
 from contextlib import contextmanager
@@ -35,3 +36,17 @@ def silence(enable:bool = True):
         finally:
             sys.stdout = old_stdout
             sys.stderr = old_stderr
+
+
+def flatten(obj, parent_key='', sep='_'):
+    items = []
+    for k, v in obj.items():
+        new_key = parent_key + sep + k if parent_key else k
+        if dataclasses.is_dataclass(v):
+            v = dataclasses.asdict(v)
+            items.extend(flatten(v, new_key, sep=sep).items())
+        elif isinstance(v, collections.MutableMapping):
+            items.extend(flatten(v, new_key, sep=sep).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)
