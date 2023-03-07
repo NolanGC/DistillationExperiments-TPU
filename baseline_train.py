@@ -24,8 +24,8 @@ from dataclasses import dataclass
 #                                module imports                                #
 # ---------------------------------------------------------------------------- #
 from models import PreResnet, ClassifierEnsemble
-from dataloaders import DistillLoader, PermutedDistillLoader, UniformDistillLoader
-from data import get_dataset
+from dataloaders import DistillLoader, PermutedDistillLoader
+from data import get_datasetv2
 from lossfns import ClassifierTeacherLoss, ClassifierEnsembleLoss, TeacherStudentFwdCrossEntLoss, ClassifierStudentLoss, ClassifierTeacherLossWithTemp
 from training import eval_epoch, supervised_epoch, distillation_epoch
 from fileutil import Platform
@@ -60,20 +60,36 @@ class Options:
     early_stop_epoch : int = 999999999
     student_learning_rate : float = None
 
+def dict2str(d):
+    s = ""
+    for k, v in d.items():
+        if type(v) is float:
+            s = s + f"\t{k}: {str(round(v, 2))}"
+        else:
+            s = s + f"\t{k}: {v}"
+    return s
+
 def main(rank, args):
     SERIAL_EXEC = xmp.MpSerialExecutor()
 
-    train_dataset, test_dataset = SERIAL_EXEC.run(get_dataset)
+    train_dataset, test_dataset, valid_dataset = SERIAL_EXEC.run(get_datasetv2)
+
     train_sampler = torch.utils.data.distributed.DistributedSampler(
           train_dataset,
           num_replicas=xm.xrt_world_size(),
           rank=xm.get_ordinal(),
           shuffle=True)
     test_sampler = torch.utils.data.distributed.DistributedSampler(
-            test_dataset,
-            num_replicas=xm.xrt_world_size(),
-            rank=xm.get_ordinal(),
-            shuffle=False)
+          test_dataset,
+          num_replicas=xm.xrt_world_size(),
+          rank=xm.get_ordinal(),
+          shuffle=False)
+    valid_sampler = torch.utils.data.distributed.DistributedSampler(
+          valid_dataset,
+          num_replicas=xm.xrt_world_size(),
+          rank=xm.get_ordinal(),
+          shuffle=False)
+
     train_loader = torch.utils.data.DataLoader(
           train_dataset,
           batch_size=args.batch_size,
@@ -87,6 +103,14 @@ def main(rank, args):
           shuffle=False,
           num_workers=args.num_workers,
           drop_last=False)
+    valid_loader = torch.utils.data.DataLoader(
+          valid_dataset,
+          batch_size=args.batch_size,
+          sampler=valid_sampler,
+          shuffle=False,
+          num_workers=args.num_workers,
+          drop_last=False)
+
     learning_rate = args.learning_rate
     device = xm.xla_device()
 
@@ -97,6 +121,7 @@ def main(rank, args):
         optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=args.nesterov)
         lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.teacher_epochs, eta_min=args.cosine_annealing_etamin)
         start_epoch = 0
+        records = {"train":[], "test":[], "valid":[]}
 
         ckpt_path = os.path.join(gcp_root, args.experiment_name, f"teacher-{teacher_index}.ckpt.pt")
         if Platform.exists(ckpt_path):
@@ -105,30 +130,35 @@ def main(rank, args):
             optimizer.load_state_dict(ckpt["optimizer"])
             lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
             start_epoch = ckpt["next_epoch"]
+            records = ckpt["records"]
 
         teacher_loss_fn = ClassifierTeacherLoss(model, device)
-        records = []
-        eval_metrics = eval_epoch(model, test_loader, epoch=start_epoch, device=device, loss_fn=teacher_loss_fn)
-        xm.master_print(f"initial eval metrics:", eval_metrics)
-        records.append(eval_metrics)
+
+        for split, loader in zip(["test", "valid"], [test_loader, valid_loader]):
+            eval_metrics = eval_epoch(model, loader, epoch=start_epoch, device=device, loss_fn=teacher_loss_fn)
+            xm.master_print(f"teacher_{teacher_index} initial {split}\t{dict2str(eval_metrics)}")
+            records[split].append(eval_metrics)
+
         for epoch in range(start_epoch, min(args.early_stop_epoch, args.teacher_epochs)):
-            metrics = {}
             train_metrics = supervised_epoch(model, train_loader, train_sampler, optimizer, lr_scheduler,
                 device=device, epoch=epoch, loss_fn = teacher_loss_fn)
-            metrics.update(train_metrics)
+            records["train"].append(train_metrics)
             if ((epoch + 1) % args.evaluation_frequency == 0):
-                eval_metrics = eval_epoch(model, test_loader, device=device, epoch=epoch, loss_fn=teacher_loss_fn)
-                metrics.update(eval_metrics)
+
+                for split, loader in zip(["test", "valid"], [test_loader, valid_loader]):
+                    eval_metrics = eval_epoch(model, loader, epoch=epoch, device=device, loss_fn=teacher_loss_fn)
+                    xm.master_print(f"teacher_{teacher_index} {split}\t{dict2str(eval_metrics)}")
+                    records[split].append(eval_metrics)
+
                 Platform.save_model({
                         "model":model.state_dict(),
                         "lr_scheduler":lr_scheduler.state_dict(),
                         "optimizer":optimizer.state_dict(),
                         "next_epoch":epoch+1,
+                        "records":records
                     },
                     ckpt_path
                 )
-            records.append(metrics)
-            xm.master_print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
     xm.rendezvous("finalize")
 
     xm.master_print("Single teacher evaluation.")
@@ -159,6 +189,7 @@ def main(rank, args):
     optimizer = torch.optim.SGD(params= student.parameters(), lr=student_learning_rate, weight_decay=args.weight_decay, momentum=args.momentum, nesterov=args.nesterov)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.student_epochs, eta_min=args.cosine_annealing_etamin)
     start_epoch = 0
+    records = {"train":[], "test":[], "valid":[]}
 
     ckpt_path = os.path.join(gcp_root, args.experiment_name, f"student.ckpt.pt")
     if Platform.exists(ckpt_path):
@@ -167,34 +198,43 @@ def main(rank, args):
         optimizer.load_state_dict(ckpt["optimizer"])
         lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
         start_epoch = ckpt["next_epoch"]
+        records = ckpt["records"]
 
     student_loss = ClassifierTeacherLossWithTemp(student, device, temp=args.temperature, num_classes=100)
-    records = []
-    eval_metrics = eval_epoch(student, test_loader, device=device, epoch=start_epoch, loss_fn=student_loss)
-    records.append(eval_metrics)
+
+    for split, loader in zip(["test", "valid"], [test_loader, valid_loader]):
+        eval_metrics = eval_epoch(student, loader, epoch=start_epoch, device=device, loss_fn=student_loss)
+        xm.master_print(f"student initial {split}\t{dict2str(eval_metrics)}")
+        records[split].append(eval_metrics)
+
     for epoch in range(start_epoch, args.student_epochs):
       metrics = {}
       train_metrics = supervised_epoch(model, train_loader, train_sampler, optimizer, lr_scheduler,
                 device=device, epoch=epoch, loss_fn = teacher_loss_fn)
-      metrics.update(train_metrics)
+      records["train"].append(train_metrics)
       if((epoch + 1) % args.evaluation_frequency == 0):
-        eval_metrics = eval_epoch(student, test_loader, device=device, epoch=epoch, loss_fn=student_loss)
-        metrics.update(eval_metrics)
+
+        for split, loader in zip(["test", "valid"], [test_loader, valid_loader]):
+          eval_metrics = eval_epoch(model, loader, epoch=epoch, device=device, loss_fn=teacher_loss_fn)
+          xm.master_print(f"student {split}\t{dict2str(eval_metrics)}")
+          records[split].append(eval_metrics)
+
         Platform.save_model({
                 "model":model.state_dict(),
                 "lr_scheduler":lr_scheduler.state_dict(),
                 "optimizer":optimizer.state_dict(),
                 "next_epoch":epoch+1,
+                "records": records,
             },
             ckpt_path
         )
-        xm.master_print("student epoch: ", epoch, " metrics: ", metrics)
-        records.append(metrics)
+
     xm.master_print("Final student evaluation.")
-    final_eval_metrics = eval_epoch(student, test_loader, device=device, epoch=epoch, loss_fn=student_loss)
+    final_eval_metrics = eval_epoch(student, test_loader, device=device, epoch=0, loss_fn=student_loss)
     xm.master_print('done')
     Platform.save_model(student.cpu().state_dict(), f'gs://tianjin-distgen/nolan/{args.experiment_name}/final_student.pt')
     Platform.save_model(final_eval_metrics, f'gs://tianjin-distgen/nolan/{args.experiment_name}/final_student_metric.pt')
+    Platform.save_model(records, f'gs://tianjin-distgen/nolan/{args.experiment_name}/final_student_records.pt')
 
     xm.rendezvous("finalize-distillation")
 

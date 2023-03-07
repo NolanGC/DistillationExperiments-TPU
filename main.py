@@ -56,6 +56,7 @@ class Options:
     experiment_name : str
     uniform : bool = False
     uniformArgmax : bool = False
+    
     # Apply early stopping to teacher.
     early_stop_epoch : int = 999999999
 
