@@ -101,6 +101,10 @@ class TrainOption:
     one_hot : bool = False
     el2n_threshold : float = None
 
+    # By default, difficult (high-EL2N) examples use teacher outputs during training, easy ones use onehot labels.
+    # By setting this flag to true the reverse is true -- difficult examples uses onehot labels.
+    el2n_invert_filter : bool = False
+
 @dataclass
 class Options:
     experiment_name : str 
