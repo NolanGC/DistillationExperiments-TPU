@@ -59,14 +59,13 @@ def compute_el2n_score(model, num_epochs, example):
     # Compute the output of the model for the example
     output = model(example)
     
-    # Compute the squared L2 norm of the output
-    l2_norm = torch.norm(output, p=2, dim=1)**2
+    # Compute the norm of the output
+    l2_norm = torch.norm(output, p=2, dim=1)
     
     # Compute the average L2 norm across all examples in the batch
     avg_l2_norm = torch.mean(l2_norm)
     
-    # Compute the EL2N score as the average L2 norm over the last `num_epochs` epochs
-    el2n_score = avg_l2_norm / num_epochs
+    el2n_score = avg_l2_norm
     
     return el2n_score.item()
 
@@ -117,13 +116,6 @@ def main(rank, args):
         optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=args.nesterov)
         lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.teacher_epochs, eta_min=args.cosine_annealing_etamin)
         start_epoch = 0
-        ckpt_path = os.path.join(gcp_root, args.experiment_name, f"trial-{trial}.ckpt.pt")
-        if Platform.exists(ckpt_path):
-            ckpt = Platform.load_model(ckpt_path)
-            model.load_state_dict(ckpt["model"])
-            optimizer.load_state_dict(ckpt["optimizer"])
-            lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
-            start_epoch = ckpt["next_epoch"]
         teacher_loss_fn = ClassifierTeacherLoss(model, device)
         records = []
         eval_metrics = eval_epoch(model, test_loader, epoch=start_epoch, device=device, loss_fn=teacher_loss_fn)
@@ -137,14 +129,6 @@ def main(rank, args):
             if ((epoch + 1) % args.evaluation_frequency == 0):
                 eval_metrics = eval_epoch(model, test_loader, device=device, epoch=epoch, loss_fn=teacher_loss_fn)
                 metrics.update(eval_metrics)
-                Platform.save_model({
-                        "model":model.state_dict(),
-                        "lr_scheduler":lr_scheduler.state_dict(),
-                        "optimizer":optimizer.state_dict(),
-                        "next_epoch":epoch+1,
-                    },
-                    ckpt_path
-                )
             records.append(metrics)
             xm.master_print(f"trial {trial} epoch {epoch} metrics: {metrics}")
     # now calulate EL2N scores using the model after trial_epochs
