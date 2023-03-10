@@ -56,7 +56,8 @@ class Options:
     experiment_name : str
     uniform : bool = False
     uniformArgmax : bool = False
-    
+    EL2NLoaderPath : str = "No path supplied"    
+    hardLabelThreshold : int = 100
     # Apply early stopping to teacher.
     early_stop_epoch : int = 999999999
 
@@ -74,12 +75,16 @@ def main(rank, args):
             num_replicas=xm.xrt_world_size(),
             rank=xm.get_ordinal(),
             shuffle=False)
-    train_loader = torch.utils.data.DataLoader(
-          train_dataset,
-          batch_size=args.batch_size,
-          sampler=train_sampler,
-          num_workers=args.num_workers,
-          drop_last=False)
+    if(args.EL2NLoaderPath == "No path supplied"):
+        train_loader = torch.utils.data.DataLoader(
+              train_dataset,
+              batch_size=args.batch_size,
+              sampler=train_sampler,
+              num_workers=args.num_workers,
+              drop_last=False)
+    else:
+        dataloader_pt = Platform.load_model(args.EL2NLoaderPath)
+        train_loader = torch.load(dataloader_pt)
     test_loader = torch.utils.data.DataLoader(
           test_dataset,
           batch_size=args.batch_size,
@@ -161,7 +166,8 @@ def main(rank, args):
           train_dataset,
           num_replicas=xm.xrt_world_size(),
           rank=xm.get_ordinal(),
-          shuffle=True)
+          shuffle= args.EL2NLoaderPath == "No path supplied")
+
     if args.permuted:
         distill_loader = PermutedDistillLoader(temp=args.temperature, batch_size=args.batch_size, shuffle=True, drop_last=True, device=device, sampler=distill_sampler, num_workers=args.num_workers, teacher=teacher, dataset=train_dataset)
     else:
@@ -200,6 +206,11 @@ def main(rank, args):
     eval_metrics = eval_epoch(student, test_loader, device=device, epoch=start_epoch, loss_fn=student_loss, teacher=teacher)
     records.append(eval_metrics)
     for epoch in range(start_epoch, args.student_epochs):
+      if(epoch > args.hardLabelThreshold):
+        student_loss = ClassifierStudentLoss(student, student_base_loss, alpha=1.0, device=device, uniform=args.uniform) # alpha is set to zero
+      else:
+        student_loss = ClassifierStudentLoss(student, student_base_loss, alpha=0.0, device=device, uniform=args.uniform) # alpha is set to zero
+
       metrics = {}
       train_metrics = distillation_epoch(student, distill_loader, distill_sampler, optimizer,
                                          lr_scheduler, epoch=epoch, loss_fn=student_loss, device=device, dataset=train_dataset, drop_last=True, sampler=distill_sampler, num_workers=args.num_workers)
