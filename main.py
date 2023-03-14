@@ -206,11 +206,6 @@ def main(rank, args):
     eval_metrics = eval_epoch(student, test_loader, device=device, epoch=start_epoch, loss_fn=student_loss, teacher=teacher)
     records.append(eval_metrics)
     for epoch in range(start_epoch, args.student_epochs):
-      if(epoch > args.hardLabelThreshold):
-        student_loss = ClassifierStudentLoss(student, student_base_loss, alpha=1.0, device=device, uniform=args.uniform) # alpha is set to zero
-      else:
-        student_loss = ClassifierStudentLoss(student, student_base_loss, alpha=0.0, device=device, uniform=args.uniform) # alpha is set to zero
-
       metrics = {}
       train_metrics = distillation_epoch(student, distill_loader, distill_sampler, optimizer,
                                          lr_scheduler, epoch=epoch, loss_fn=student_loss, device=device, dataset=train_dataset, drop_last=True, sampler=distill_sampler, num_workers=args.num_workers)
