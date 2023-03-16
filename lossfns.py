@@ -120,4 +120,3 @@ class ClassifierEnsembleLoss(object):
         logits = self.ensemble(inputs.to(self.device))
         logits = reduce_ensemble_logits(logits)
         return F.nll_loss(logits, targets), logits
-
