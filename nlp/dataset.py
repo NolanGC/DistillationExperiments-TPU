@@ -19,6 +19,7 @@ class DataOption:
     # By default, difficult (high-EL2N) examples use teacher outputs during training, easy ones use onehot labels.
     # By setting this flag to true the reverse is true -- difficult examples uses onehot labels.
     el2n_invert_filter : bool = False
+    soft_labels_fraction : float = None
     subsample_fraction : float = None
 
 class DatasetKind(Enum):
@@ -83,10 +84,15 @@ def get_dataloader(dataset: DatasetKind,
             if option.el2n_threshold is not None:
                 soft_label_mask = avg_el2n > option.el2n_threshold
                 if option.el2n_invert_filter:
-                    soft_label_mask = torch.logical_not(soft_label_mask)
+                    soft_label_mask = torch.logical_not(soft_label_mask).cpu().numpy()
+            elif option.soft_labels_fraction is not None:
+                soft_label_mask = np.zeros_like(avg_el2n).astype(np.bool)
+                soft_label_indices = np.arange(avg_el2n.shape[0])
+                np.random.RandomState(option.seed).shuffle(soft_label_indices)
+                soft_label_indices = soft_label_indices[:int(option.soft_labels_fraction * len(avg_el2n))]
+                soft_label_mask[soft_label_indices] = True
             else:
-                soft_label_mask = torch.ones_like(avg_el2n).bool()
-            soft_label_mask = soft_label_mask.cpu().numpy()
+                soft_label_mask = torch.ones_like(avg_el2n).bool().cpu().numpy()
 
             def assign_soft_label_mask(examples, idx):
                 return {"soft_label_mask": soft_label_mask[idx]}
