@@ -6,6 +6,7 @@ import torch_xla.core.xla_model as xm
 from pydantic.dataclasses import dataclass
 from fileutil import Platform
 import torch.nn.functional as F
+import numpy as np 
 
 @dataclass
 class DataOption:
@@ -13,7 +14,12 @@ class DataOption:
     eval_batch_size: int = 100
     seed: int = 42
     num_workers: int = 4
+    el2n_threshold : float = None
 
+    # By default, difficult (high-EL2N) examples use teacher outputs during training, easy ones use onehot labels.
+    # By setting this flag to true the reverse is true -- difficult examples uses onehot labels.
+    el2n_invert_filter : bool = False
+    subsample_fraction : float = None
 
 class DatasetKind(Enum):
     SST2 = 1
@@ -72,18 +78,36 @@ def get_dataloader(dataset: DatasetKind,
                 all_el2n.append(el2n)
 
             all_el2n = torch.vstack(all_el2n)
-            avg_el2n = torch.mean(all_el2n, dim=0).cpu().numpy()
+            avg_el2n = torch.mean(all_el2n, dim=0)
 
-            def assign_el2n(examples, idx):
-                return {"el2n": avg_el2n[idx]}
-            dataset = dataset.map(assign_el2n, batched=True, 
+            if option.el2n_threshold is not None:
+                soft_label_mask = avg_el2n > option.el2n_threshold
+                if option.el2n_invert_filter:
+                    soft_label_mask = torch.logical_not(soft_label_mask)
+            else:
+                soft_label_mask = torch.ones_like(avg_el2n).bool()
+            soft_label_mask = soft_label_mask.cpu().numpy()
+
+            def assign_soft_label_mask(examples, idx):
+                return {"soft_label_mask": soft_label_mask[idx]}
+
+            dataset = dataset.map(assign_soft_label_mask, batched=True, 
                                   with_indices=True)
             dataset.set_format(type='torch',
                                 columns=[
                                     'input_ids', 'token_type_ids',
-                                    'attention_mask', 'labels', 'el2n'
+                                    'attention_mask', 'labels', 
+                                    'soft_label_mask'
                                 ])
             assert torch.all(dataset["labels"] == labels).item()
+
+            if option.subsample_fraction is not None:
+                subsample_indices = np.arange(len(dataset))
+                np.random.RandomState(option.seed).shuffle(subsample_indices)
+                subsample_indices = subsample_indices[:int(len(dataset) * option.subsample_fraction)]
+                print(subsample_indices)
+                dataset = torch.utils.data.Subset(dataset, subsample_indices.tolist())
+
         else:
             dataset.set_format(type='torch',
                                 columns=[

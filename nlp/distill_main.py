@@ -99,11 +99,6 @@ class TrainOption:
     epochs : int = 30
     temperature : int = 8
     one_hot : bool = False
-    el2n_threshold : float = None
-
-    # By default, difficult (high-EL2N) examples use teacher outputs during training, easy ones use onehot labels.
-    # By setting this flag to true the reverse is true -- difficult examples uses onehot labels.
-    el2n_invert_filter : bool = False
 
 @dataclass
 class Options:
@@ -111,9 +106,12 @@ class Options:
     train : TrainOption = TrainOption()
     data : DataOption = DataOption()
 
-
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_arguments(Options, dest="options")
     args = parser.parse_args().options
+
+    # Check for invalid combination:
+    assert not (args.train.one_hot and (args.data.el2n_threshold != None)), "Cannot simultaneously specify EL2N threshold while training with one-hot labels."
+
     xmp.spawn(_mp_fn, nprocs=8, args=(args,))

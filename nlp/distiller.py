@@ -66,24 +66,19 @@ class TPUGeneralDistiller:
                 self.train_loader, [device]).per_device_loader(device)
 
             for step, batch in enumerate(parallel_loader):
-                el2n_scores = batch.pop("el2n")
+                soft_label_mask = batch.pop("soft_label_mask")
                 with torch.no_grad():
                     results_T = self.teacher(**batch, **args)
                 results_S = self.student(**batch, **args)
                 teacher_logit = results_T.logits
                 student_logit = results_S.logits
 
-                assert self.train_args.one_hot != (self.train_args.el2n_threshold != None), "Cannot specify EL2N threshold while training with one-hot labels."
                 labels = batch["labels"]
                 if self.train_args.one_hot:
                     teacher_logit = F.one_hot(labels, num_classes=student_logit.shape[-1])
-                elif self.train_args.el2n_threshold != None:
-                    difficulty = el2n_scores > self.train_args.el2n_threshold
-                    if self.train_args.el2n_invert_filter:
-                        difficulty = torch.logical_not(difficulty)
-                    onehot_labels = F.one_hot(labels, num_classes=student_logit.shape[-1]).float()
-                    teacher_logit = torch.where(torch.unsqueeze(difficulty, dim=-1), teacher_logit, onehot_labels)
                 
+                onehot_labels = F.one_hot(labels, num_classes=student_logit.shape[-1]).float()
+                teacher_logit = torch.where(torch.unsqueeze(soft_label_mask, dim=-1), teacher_logit, onehot_labels)        
                 
                 loss = kd_loss(student_logit, teacher_logit, self.train_args.temperature)
                 loss.backward()
