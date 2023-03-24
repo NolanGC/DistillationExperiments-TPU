@@ -20,6 +20,7 @@ import argparse
 from torchvision import datasets, transforms
 import argparse
 from dataclasses import dataclass
+import wandb
 # ---------------------------------------------------------------------------- #
 #                                module imports                                #
 # ---------------------------------------------------------------------------- #
@@ -64,6 +65,12 @@ class Options:
     init_student_from: int = -1
 
 def main(rank, args):
+    if xm.is_master_ordinal():
+        wandb.init(
+            project="c10-distillation",
+            name=args.experiment_name,
+            config=vars(args))
+        
     SERIAL_EXEC = xmp.MpSerialExecutor()
 
     train_dataset, test_dataset = SERIAL_EXEC.run(get_dataset)
@@ -233,6 +240,8 @@ def main(rank, args):
             },
             ckpt_path
         )
+        if xm.is_master_ordinal():
+            wandb.log(metrics, step=epoch)
         xm.master_print("student epoch: ", epoch, " metrics: ", metrics)
         records.append(metrics)
     xm.master_print("Final student evaluation.")
