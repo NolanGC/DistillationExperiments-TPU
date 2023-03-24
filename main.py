@@ -60,6 +60,9 @@ class Options:
     # Apply early stopping to teacher.
     early_stop_epoch : int = 999999999
 
+    # Initialize the student from teacher checkpoint at the specified epoch.
+    init_student_from: int = -1
+
 def main(rank, args):
     SERIAL_EXEC = xmp.MpSerialExecutor()
 
@@ -127,6 +130,14 @@ def main(rank, args):
                     },
                     ckpt_path
                 )
+
+            if epoch == args.init_student_from:
+                xm.master_print(f"Saving teacher {teacher_index} at epoch {epoch} for student initialization.")
+                Platform.save_model(model.state_dict(), 
+                                    os.path.join(gcp_root, 
+                                                 args.experiment_name, 
+                                                 f"student_init_at{args.init_student_from}.pt"))
+
             records.append(metrics)
             xm.master_print(f"teacher {teacher_index} epoch {epoch} metrics: {metrics}")
     xm.rendezvous("finalize")
@@ -176,6 +187,13 @@ def main(rank, args):
     """
     xm.master_print("Beginning distillation stage.")
     student = PreResnet(deptch=56).to(device)
+
+    if args.init_student_from >= 0:
+        xm.master_print(f"Loading teacher at epoch {args.init_student_from} for student initialization.")
+        student_state_path = os.path.join(gcp_root, args.experiment_name, f"student_init_at{args.init_student_from}.pt")
+        student_state = Platform.load_model(student_state_path)
+        student.load_state_dict(student_state)
+    
     optimizer = torch.optim.SGD(params= student.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, momentum=args.momentum, nesterov=args.nesterov)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.student_epochs, eta_min=args.cosine_annealing_etamin)
     start_epoch = 0
